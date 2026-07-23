@@ -1,6 +1,9 @@
 from __future__ import annotations
 
-from genblaze_core import Evaluator, EvaluationResult
+import json
+from typing import Any, cast
+
+from genblaze_core import EvaluationResult, Evaluator
 from genblaze_openai import chat
 
 from ..config import settings
@@ -12,7 +15,7 @@ then return ONLY valid JSON:
 
 {
   "hook_strength": 0.0-1.0,     // does the visual grab attention instantly?
-  "text_legibility": 0.0-1.0,   // is any on-screen text crisp and readable?
+  "text_legibility": 0.0-1.0,   // is the lower caption safe-zone clean and high contrast?
   "visual_artifacts": 0.0-1.0,  // 1.0 = clean, 0.0 = heavy AI artifacts/glitches
   "on_brand": 0.0-1.0,          // cohesive aesthetic, not random/clashing
   "overall": 0.0-1.0,           // your holistic score
@@ -28,7 +31,8 @@ class VisionJudge(Evaluator):
     """Vision-model quality judge. Uses gpt-4o-mini (cheaper, faster) — different from the generator."""
 
     def evaluate(self, result) -> EvaluationResult:
-        import json
+        if not settings.openai_api_key:
+            raise RuntimeError("OPENAI_API_KEY is required for the Phase 4 vision judge")
 
         steps = result.run.steps
         if not steps or not steps[-1].assets:
@@ -51,17 +55,37 @@ class VisionJudge(Evaluator):
             api_key=settings.openai_api_key or None,
         )
 
-        raw = resp.text.strip()
-        if raw.startswith("```"):
-            raw = raw.split("```")[1].lstrip("json").strip().rstrip("`").strip()
-
         try:
-            scores = json.loads(raw)
+            scores = parse_judge_scores(resp.text)
         except Exception:
             return EvaluationResult(passed=False, score=0.0, feedback="Judge parse error")
 
-        overall = float(scores.get("overall", 0.0))
-        feedback = scores.get("feedback") or None
+        overall = cast(float, scores["overall"])
+        feedback_value = scores.get("feedback")
+        feedback = feedback_value if isinstance(feedback_value, str) else None
         passed = overall >= settings.judge_pass_threshold
 
-        return EvaluationResult(passed=passed, score=overall, feedback=feedback)
+        return EvaluationResult(passed=passed, score=overall, feedback=feedback, metadata=scores)
+
+
+def parse_judge_scores(raw: str) -> dict[str, float | str | None]:
+    """Parse and constrain the judge response before it influences a retry."""
+    raw = raw.strip()
+    if raw.startswith("```"):
+        raw = raw.split("```", maxsplit=2)[1]
+        if raw.lstrip().startswith("json"):
+            raw = raw.lstrip()[4:]
+    data: dict[str, Any] = json.loads(raw.strip().rstrip("`").strip())
+
+    required = ("hook_strength", "text_legibility", "visual_artifacts", "on_brand", "overall")
+    scores: dict[str, float | str | None] = {}
+    for key in required:
+        value = float(data[key])
+        if not 0.0 <= value <= 1.0:
+            raise ValueError(f"{key} must be between 0 and 1")
+        scores[key] = value
+    feedback = data.get("feedback")
+    if feedback is not None and not isinstance(feedback, str):
+        raise ValueError("feedback must be a string or null")
+    scores["feedback"] = feedback
+    return scores

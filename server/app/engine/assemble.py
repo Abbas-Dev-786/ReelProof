@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import os
 import subprocess
 import tempfile
 import urllib.request
@@ -9,7 +8,49 @@ from pathlib import Path
 from ..config import settings
 
 
-def assemble_slideshow(captioned_image_paths: list[str], music_url: str, beat_duration: float) -> str:
+def _build_video_filter(
+    n: int, beat_duration: float, transition_duration: float
+) -> tuple[str, float]:
+    """Build the still-to-video filter graph and return its final duration."""
+    if n < 1:
+        raise ValueError("A slideshow needs at least one frame")
+
+    fps = settings.slideshow_fps
+    segments = [
+        (
+            f"[{index}:v]scale={settings.slideshow_width}:{settings.slideshow_height}:force_original_aspect_ratio=increase,"
+            f"crop={settings.slideshow_width}:{settings.slideshow_height},"
+            f"zoompan=z='min(zoom+0.0008,1.05)':d=1:s={settings.slideshow_width}x{settings.slideshow_height},"
+            f"setsar=1,fps={fps}[v{index}]"
+        )
+        for index in range(n)
+    ]
+
+    if n == 1:
+        return ";".join(segments) + ";[v0]null[vout]", beat_duration
+
+    filters = segments[:]
+    previous = "v0"
+    current_duration = beat_duration
+    for index in range(1, n):
+        output = f"xf{index}"
+        offset = current_duration - transition_duration
+        filters.append(
+            f"[{previous}][v{index}]xfade=transition=fade:duration={transition_duration}:offset={offset}[{output}]"
+        )
+        previous = output
+        current_duration += beat_duration - transition_duration
+
+    filters.append(f"[{previous}]null[vout]")
+    return ";".join(filters), current_duration
+
+
+def assemble_slideshow(
+    captioned_image_paths: list[str],
+    music_url: str,
+    beat_duration: float,
+    output_dir: str | Path | None = None,
+) -> str:
     """
     Concat N captioned stills into a timed 9:16 MP4 with background music.
 
@@ -18,68 +59,85 @@ def assemble_slideshow(captioned_image_paths: list[str], music_url: str, beat_du
 
     Returns the local path of the final MP4.
     """
-    os.makedirs(settings.output_dir, exist_ok=True)
+    if not captioned_image_paths:
+        raise ValueError("Cannot assemble a slideshow without captioned images")
+    if beat_duration <= 0:
+        raise ValueError("beat_duration must be greater than zero")
 
-    n = len(captioned_image_paths)
-    total_duration = n * beat_duration
-    out_path = os.path.join(settings.output_dir, "reel_slideshow.mp4")
+    target_dir = Path(output_dir or settings.output_dir)
+    target_dir.mkdir(parents=True, exist_ok=True)
+    image_paths = [Path(path).resolve() for path in captioned_image_paths]
+    missing = [str(path) for path in image_paths if not path.is_file()]
+    if missing:
+        raise FileNotFoundError(f"Captioned image files not found: {', '.join(missing)}")
+
+    n = len(image_paths)
+    transition_duration = min(settings.slideshow_transition_sec, beat_duration / 3)
+    video_filter, total_duration = _build_video_filter(n, beat_duration, transition_duration)
+    out_path = target_dir / "reel_slideshow.mp4"
 
     # --- Download music ---
     music_suffix = Path(music_url.split("?")[0]).suffix or ".mp3"
-    with tempfile.NamedTemporaryFile(delete=False, suffix=music_suffix, dir=settings.output_dir) as f:
+    with tempfile.NamedTemporaryFile(delete=False, suffix=music_suffix, dir=target_dir) as f:
         urllib.request.urlretrieve(music_url, f.name)
-        music_path = f.name
+        music_path = Path(f.name)
 
     # --- Build ffmpeg input args ---
     # Each image as a looped video source for beat_duration seconds
     input_args: list[str] = []
-    for img_path in captioned_image_paths:
-        input_args += ["-loop", "1", "-t", str(beat_duration), "-i", img_path]
+    fps = settings.slideshow_fps
+    for img_path in image_paths:
+        input_args += [
+            "-loop",
+            "1",
+            "-framerate",
+            str(fps),
+            "-t",
+            str(beat_duration),
+            "-i",
+            str(img_path),
+        ]
 
-    # Music input
-    input_args += ["-i", music_path]
+    # Music repeats if the provider returned a shorter track than the reel.
+    input_args += ["-stream_loop", "-1", "-i", str(music_path)]
     music_index = n  # music is the last input
 
-    # --- Build zoompan filter for each still (subtle ken-burns) ---
-    fps = 25
-    frames_per_beat = int(beat_duration * fps)
-    zoom_filters = []
-    for i in range(n):
-        zoom_filters.append(
-            f"[{i}:v]scale=1080:1920:force_original_aspect_ratio=increase,"
-            f"crop=1080:1920,"
-            f"zoompan=z='min(zoom+0.0008,1.05)':d={frames_per_beat}:s=1080x1920,"
-            f"setsar=1,fps={fps}[v{i}]"
-        )
-
-    # Concat all beat videos
-    concat_inputs = "".join(f"[v{i}]" for i in range(n))
     filter_complex = (
-        ";".join(zoom_filters)
-        + f";{concat_inputs}concat=n={n}:v=1:a=0[vout]"
-        # Trim/loop music to match total duration
-        + f";[{music_index}:a]atrim=0:{total_duration},asetpts=PTS-STARTPTS,volume=0.4[aout]"
+        video_filter
+        # Trim looped music to match the exact reel duration.
+        + f";[{music_index}:a]atrim=duration={total_duration},asetpts=PTS-STARTPTS,volume=0.4[aout]"
     )
 
     cmd = [
-        "ffmpeg", "-y",
+        "ffmpeg",
+        "-y",
         *input_args,
-        "-filter_complex", filter_complex,
-        "-map", "[vout]",
-        "-map", "[aout]",
-        "-c:v", "libx264",
-        "-preset", "fast",
-        "-crf", "23",
-        "-c:a", "aac",
-        "-b:a", "128k",
+        "-filter_complex",
+        filter_complex,
+        "-map",
+        "[vout]",
+        "-map",
+        "[aout]",
+        "-c:v",
+        "libx264",
+        "-preset",
+        "fast",
+        "-crf",
+        "23",
+        "-c:a",
+        "aac",
+        "-b:a",
+        "128k",
         "-shortest",
-        "-movflags", "+faststart",
-        out_path,
+        "-movflags",
+        "+faststart",
+        str(out_path),
     ]
 
-    result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
-    if result.returncode != 0:
-        raise RuntimeError(f"ffmpeg slideshow assembly failed:\n{result.stderr[-2000:]}")
-
-    os.unlink(music_path)
-    return out_path
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+        if result.returncode != 0:
+            raise RuntimeError(f"ffmpeg slideshow assembly failed:\n{result.stderr[-2000:]}")
+        return str(out_path)
+    finally:
+        music_path.unlink(missing_ok=True)

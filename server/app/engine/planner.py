@@ -33,7 +33,37 @@ Rules:
 """
 
 
+def parse_beat_plan(raw: str, beat_count: int) -> BeatPlan:
+    """Validate the model response before it can enter the render pipeline."""
+    raw = raw.strip()
+    if raw.startswith("```"):
+        raw = raw.split("```", maxsplit=2)[1]
+        if raw.lstrip().startswith("json"):
+            raw = raw.lstrip()[4:]
+    raw = raw.strip().rstrip("`").strip()
+
+    data = json.loads(raw)
+    beats = [Beat(**beat) for beat in data["beats"]]
+    if len(beats) != beat_count:
+        raise ValueError(f"Planner returned {len(beats)} beats; expected exactly {beat_count}")
+
+    expected_indexes = list(range(beat_count))
+    actual_indexes = [beat.index for beat in beats]
+    if actual_indexes != expected_indexes:
+        raise ValueError(f"Planner beat indexes must be {expected_indexes}; got {actual_indexes}")
+
+    return BeatPlan(
+        hook=data["hook"],
+        beats=beats,
+        suggested_caption=data["suggested_caption"],
+        hashtags=data.get("hashtags", []),
+    )
+
+
 def plan_beats(topic: str, beat_count: int = 5, product_context: str | None = None) -> BeatPlan:
+    if not settings.openai_api_key:
+        raise RuntimeError("OPENAI_API_KEY is required to plan a campaign")
+
     user_msg = f"Topic: {topic}\nbeat_count: {beat_count}"
     if product_context:
         user_msg += f"\nProduct context: {product_context}"
@@ -46,19 +76,4 @@ def plan_beats(topic: str, beat_count: int = 5, product_context: str | None = No
         api_key=settings.openai_api_key or None,
     )
 
-    raw = resp.text.strip()
-    # Strip markdown code fences if present
-    if raw.startswith("```"):
-        raw = raw.split("```")[1]
-        if raw.startswith("json"):
-            raw = raw[4:]
-    raw = raw.strip().rstrip("`").strip()
-
-    data = json.loads(raw)
-    beats = [Beat(**b) for b in data["beats"]]
-    return BeatPlan(
-        hook=data["hook"],
-        beats=beats,
-        suggested_caption=data["suggested_caption"],
-        hashtags=data.get("hashtags", []),
-    )
+    return parse_beat_plan(resp.text, beat_count)

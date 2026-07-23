@@ -208,6 +208,14 @@ tempCodeRunnerFile.py
 # Ruff stuff:
 .ruff_cache/
 
+# Local runtime state
+jobs.db
+jobs.db-shm
+jobs.db-wal
+data/
+output/
+.venv/
+
 # PyPI configuration file
 .pypirc
 

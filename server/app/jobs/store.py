@@ -1,30 +1,45 @@
 from __future__ import annotations
 
-import asyncio
 import json
 import sqlite3
 import threading
-from pathlib import Path
+from collections.abc import Iterator
+from contextlib import contextmanager
 from typing import Any
 
-DB_PATH = Path("jobs.db")
+from ..config import settings
+
+DB_PATH = settings.database_file
 _lock = threading.Lock()
 
 
-def _conn() -> sqlite3.Connection:
-    conn = sqlite3.connect(str(DB_PATH))
+@contextmanager
+def _conn() -> Iterator[sqlite3.Connection]:
+    DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(str(DB_PATH), timeout=30)
     conn.row_factory = sqlite3.Row
-    return conn
+    conn.execute("PRAGMA foreign_keys = ON")
+    conn.execute("PRAGMA busy_timeout = 5000")
+    try:
+        yield conn
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
 
 
 def init_db() -> None:
     with _conn() as conn:
+        conn.execute("PRAGMA journal_mode = WAL")
         conn.execute("""
             CREATE TABLE IF NOT EXISTS jobs (
                 job_id      TEXT PRIMARY KEY,
                 status      TEXT NOT NULL DEFAULT 'pending',
                 topic       TEXT,
                 mode        TEXT,
+                beat_count  INTEGER NOT NULL DEFAULT 5,
                 result_json TEXT,
                 error       TEXT,
                 created_at  DATETIME DEFAULT CURRENT_TIMESTAMP,
@@ -39,13 +54,52 @@ def init_db() -> None:
                 PRIMARY KEY (job_id, step_id)
             )
         """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS product_assets (
+                asset_id      TEXT PRIMARY KEY,
+                job_id        TEXT NOT NULL,
+                filename      TEXT NOT NULL,
+                media_type    TEXT NOT NULL,
+                asset_url     TEXT NOT NULL,
+                sha256        TEXT,
+                run_id        TEXT NOT NULL,
+                manifest_hash TEXT NOT NULL,
+                manifest_uri  TEXT,
+                created_at    DATETIME DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS provenance_records (
+                run_id        TEXT PRIMARY KEY,
+                job_id        TEXT,
+                manifest_json TEXT NOT NULL,
+                manifest_hash TEXT NOT NULL,
+                manifest_uri  TEXT,
+                parent_run_id TEXT,
+                created_at    DATETIME DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_product_assets_job_id ON product_assets(job_id)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_provenance_records_job_id ON provenance_records(job_id)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_provenance_records_parent_run_id ON provenance_records(parent_run_id)"
+        )
+
+        # Lightweight migration for databases created before beat_count existed.
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(jobs)")}
+        if "beat_count" not in columns:
+            conn.execute("ALTER TABLE jobs ADD COLUMN beat_count INTEGER NOT NULL DEFAULT 5")
 
 
-def create_job(job_id: str, topic: str, mode: str) -> None:
+def create_job(job_id: str, topic: str, mode: str, beat_count: int) -> None:
     with _lock, _conn() as conn:
         conn.execute(
-            "INSERT INTO jobs (job_id, status, topic, mode) VALUES (?,?,?,?)",
-            (job_id, "pending", topic, mode),
+            "INSERT INTO jobs (job_id, status, topic, mode, beat_count) VALUES (?,?,?,?,?)",
+            (job_id, "pending", topic, mode, beat_count),
         )
 
 
@@ -55,6 +109,19 @@ def set_running(job_id: str) -> None:
             "UPDATE jobs SET status='running', updated_at=CURRENT_TIMESTAMP WHERE job_id=?",
             (job_id,),
         )
+
+
+def claim_job_start(job_id: str) -> bool:
+    """Atomically transition a draft job to running exactly once."""
+    with _lock, _conn() as conn:
+        cursor = conn.execute(
+            """
+            UPDATE jobs SET status='running', updated_at=CURRENT_TIMESTAMP
+            WHERE job_id=? AND status='pending'
+            """,
+            (job_id,),
+        )
+    return cursor.rowcount == 1
 
 
 def set_result(job_id: str, result_json: str) -> None:
@@ -73,15 +140,129 @@ def set_failed(job_id: str, error: str) -> None:
         )
 
 
-def get_job(job_id: str) -> dict | None:
+def get_job(job_id: str) -> dict[str, Any] | None:
     with _conn() as conn:
         row = conn.execute("SELECT * FROM jobs WHERE job_id=?", (job_id,)).fetchone()
     if row is None:
         return None
     d = dict(row)
     if d.get("result_json"):
-        d["result"] = json.loads(d["result_json"])
+        try:
+            d["result"] = json.loads(d["result_json"])
+        except json.JSONDecodeError as exc:
+            raise RuntimeError(f"Job {job_id} has invalid persisted result JSON") from exc
     return d
+
+
+def record_product_asset(
+    *,
+    asset_id: str,
+    job_id: str,
+    filename: str,
+    media_type: str,
+    asset_url: str,
+    sha256: str | None,
+    run_id: str,
+    manifest_hash: str,
+    manifest_uri: str | None,
+) -> None:
+    with _lock, _conn() as conn:
+        conn.execute(
+            """
+            INSERT INTO product_assets
+                (asset_id, job_id, filename, media_type, asset_url, sha256, run_id, manifest_hash, manifest_uri)
+            VALUES (?,?,?,?,?,?,?,?,?)
+            """,
+            (
+                asset_id,
+                job_id,
+                filename,
+                media_type,
+                asset_url,
+                sha256,
+                run_id,
+                manifest_hash,
+                manifest_uri,
+            ),
+        )
+
+
+def list_product_assets(job_id: str) -> list[dict[str, Any]]:
+    with _conn() as conn:
+        rows = conn.execute(
+            "SELECT * FROM product_assets WHERE job_id=? ORDER BY created_at, asset_id", (job_id,)
+        ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def record_provenance(
+    *,
+    run_id: str,
+    job_id: str | None,
+    manifest_json: str,
+    manifest_hash: str,
+    manifest_uri: str | None,
+    parent_run_id: str | None,
+) -> None:
+    with _lock, _conn() as conn:
+        conn.execute(
+            """
+            INSERT INTO provenance_records
+                (run_id, job_id, manifest_json, manifest_hash, manifest_uri, parent_run_id)
+            VALUES (?,?,?,?,?,?)
+            ON CONFLICT(run_id) DO UPDATE SET
+                job_id=excluded.job_id,
+                manifest_json=excluded.manifest_json,
+                manifest_hash=excluded.manifest_hash,
+                manifest_uri=excluded.manifest_uri,
+                parent_run_id=excluded.parent_run_id
+            """,
+            (run_id, job_id, manifest_json, manifest_hash, manifest_uri, parent_run_id),
+        )
+
+
+def get_provenance(run_id: str) -> dict[str, Any] | None:
+    with _conn() as conn:
+        row = conn.execute("SELECT * FROM provenance_records WHERE run_id=?", (run_id,)).fetchone()
+    return dict(row) if row else None
+
+
+def lineage_for_job(job_id: str) -> list[dict[str, Any]]:
+    with _conn() as conn:
+        rows = conn.execute(
+            """
+            SELECT run_id, manifest_hash, manifest_uri, parent_run_id, created_at
+            FROM provenance_records WHERE job_id=? ORDER BY created_at, run_id
+            """,
+            (job_id,),
+        ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def lineage_for_run(run_id: str) -> list[dict[str, Any]]:
+    """Follow parent links from a run to its oldest recorded ancestor."""
+    lineage: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    current_run_id: str | None = run_id
+    while current_run_id and current_run_id not in seen:
+        seen.add(current_run_id)
+        record = get_provenance(current_run_id)
+        if record is None:
+            break
+        lineage.append(
+            {
+                key: record[key]
+                for key in (
+                    "run_id",
+                    "manifest_hash",
+                    "manifest_uri",
+                    "parent_run_id",
+                    "created_at",
+                )
+            }
+        )
+        current_run_id = record["parent_run_id"]
+    return lineage
 
 
 def save_checkpoint(job_id: str, step_id: str, prediction_id: Any) -> None:

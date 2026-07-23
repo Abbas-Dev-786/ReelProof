@@ -1,91 +1,146 @@
-"""
-Phase 0/1 smoke test — run from server/ with the venv active:
-    python smoke_test.py
+"""Phase 1 preflight and opt-in live smoke test.
 
-Verifies:
-  1. Config loads (env vars present)
-  2. B2 backend connects
-  3. One image generation + B2 store + manifest.verify()
-  4. FFmpegCompositor is importable and ffmpeg is on PATH
+Run from ``server/`` using the project's Conda environment:
+
+    conda run -n myenv python smoke_test.py
+    conda run -n myenv python smoke_test.py --live
+
+The default command never calls a paid provider. ``--live`` proves the
+Phase 1 image -> B2 -> verified-manifest and TTS primitives using the
+credentials in ``server/.env``.
+
+GenBlaze's FFmpegCompositor accepts a *video* and an audio asset, not an
+image and an audio asset. The actual compositor proof belongs to Phase 2,
+once the slideshow builder turns the stills into a video stream.
 """
 
 from __future__ import annotations
 
-import subprocess
+import argparse
+import shutil
 import sys
 
 
-def check(label: str, ok: bool, detail: str = "") -> None:
-    status = "OK " if ok else "FAIL"
-    print(f"  [{status}] {label}" + (f": {detail}" if detail else ""))
-    if not ok:
-        sys.exit(1)
+def report(label: str, ok: bool, detail: str = "") -> bool:
+    status = "OK" if ok else "FAIL"
+    print(f"  [{status:4}] {label}" + (f": {detail}" if detail else ""))
+    return ok
 
 
-print("\n=== ReelProof Phase 0/1 Smoke Test ===\n")
+def preflight() -> bool:
+    """Run local checks only; no network calls and no paid inference."""
+    from app.config import settings
 
-# 1. Config
-print("1. Config")
-from app.config import settings
-check("OPENAI_API_KEY set", bool(settings.openai_api_key), "(not set = judge/planner won't work)")
-check("GMI_API_KEY set", bool(settings.gmi_api_key))
-check("B2_KEY_ID set", bool(settings.b2_key_id))
-check("B2_APP_KEY set", bool(settings.b2_app_key))
-check("B2_BUCKET set", bool(settings.b2_bucket), settings.b2_bucket)
+    print("\n=== ReelProof Phase 1 preflight ===\n")
+    ok = True
 
-# 2. ffmpeg
-print("\n2. ffmpeg")
-r = subprocess.run(["ffmpeg", "-version"], capture_output=True, text=True)
-ver = r.stdout.splitlines()[0] if r.returncode == 0 else ""
-check("ffmpeg on PATH", r.returncode == 0, ver[:60])
+    missing = settings.missing_phase1_settings()
+    ok &= report(
+        "Phase 1 credentials configured",
+        not missing,
+        "missing " + ", ".join(missing) if missing else "",
+    )
 
-# 3. Genblaze imports
-print("\n3. Genblaze packages")
-import genblaze_core, genblaze_s3, genblaze_openai, genblaze_gmicloud
-import genblaze_stability_audio
-check("genblaze_core", True)
-check("genblaze_s3", True)
-check("genblaze_openai", True)
-check("genblaze_gmicloud", True)
-check("genblaze_stability_audio", True)
+    ffmpeg = shutil.which("ffmpeg")
+    ok &= report("ffmpeg on PATH", ffmpeg is not None, ffmpeg or "install ffmpeg before Phase 2")
 
-# 4. B2 backend connection
-print("\n4. B2 connection")
-try:
-    from app.storage import get_backend
-    backend = get_backend()
-    check("S3StorageBackend.for_backblaze() init", True)
-except Exception as e:
-    check("S3StorageBackend.for_backblaze() init", False, str(e))
-
-# 5. GMICloud image + B2 store (live API call — skipped if no keys)
-print("\n5. Live: GMICloud image → B2 (skip if no keys)")
-if settings.gmi_api_key and settings.b2_key_id:
     try:
-        from genblaze_core import Modality, Pipeline
-        from genblaze_gmicloud import GMICloudImageProvider
-        from app.storage import build_sink
+        import genblaze_core  # noqa: F401
+        import genblaze_gmicloud  # noqa: F401
+        import genblaze_openai  # noqa: F401
+        import genblaze_s3  # noqa: F401
+    except ImportError as exc:
+        ok &= report("required GenBlaze packages import", False, str(exc))
+    else:
+        ok &= report("required GenBlaze packages import", True)
 
-        sink = build_sink()
-        result = (
-            Pipeline("smoke-test")
+    print(
+        "\nUse --live only after the checks above pass; it makes one image and one TTS request.\n"
+    )
+    return bool(ok)
+
+
+def live_smoke() -> bool:
+    """Make the two paid Phase 1 provider calls and verify B2 persistence."""
+    from genblaze_core import Modality, Pipeline
+    from genblaze_core.providers import per_input_chars, per_unit
+    from genblaze_gmicloud import GMICloudImageProvider
+    from genblaze_openai import OpenAITTSProvider
+
+    from app.config import settings
+    from app.storage import build_sink
+
+    if missing := settings.missing_phase1_settings():
+        report("live smoke prerequisites", False, "missing " + ", ".join(missing))
+        return False
+    if not shutil.which("ffmpeg"):
+        report("live smoke prerequisites", False, "ffmpeg is not on PATH")
+        return False
+
+    print("=== Phase 1 live smoke (paid provider calls) ===\n")
+    try:
+        sink = build_sink()  # B2 credential/bucket preflight happens here.
+        report("B2 backend preflight", True)
+
+        image = GMICloudImageProvider(api_key=settings.gmi_api_key)
+        # GMI rates are user-supplied. Update the .env value if your account's
+        # contract differs from the documented Reve Create per-image rate.
+        image.models.register_pricing(
+            settings.gmi_image_model, per_unit(settings.gmi_image_unit_cost_usd)
+        )
+        image_result = (
+            Pipeline("phase1-image-b2")
             .step(
-                GMICloudImageProvider(api_key=settings.gmi_api_key),
-                model="reve-create",
-                prompt="a serene mountain lake at sunrise, photorealistic, no text",
+                image,
+                model=settings.gmi_image_model,
+                prompt="A clean faceless product flat lay on a warm studio background, no text",
                 modality=Modality.IMAGE,
             )
             .run(sink=sink, timeout=120)
         )
-        verified = result.manifest.verify()
-        url = result.run.steps[0].assets[0].url if result.run.steps[0].assets else "n/a"
-        check("image generated", True, url[:80])
-        check("manifest.verify()", verified)
-        print(f"     run_id:  {result.run.run_id}")
-        print(f"     hash:    {result.manifest.canonical_hash[:24]}...")
-    except Exception as e:
-        check("GMICloud image → B2", False, str(e))
-else:
-    print("  [SKIP] GMI_API_KEY or B2 keys not set")
+        image_verified = image_result.manifest.verify()
+        report("image -> B2 -> manifest.verify()", image_verified, image_result.run.run_id)
 
-print("\n=== Done ===\n")
+        tts = OpenAITTSProvider(api_key=settings.openai_api_key, output_dir=settings.output_dir)
+        tts.models.register_pricing("tts-1", per_input_chars(15.00, per=1_000_000))
+        tts_result = (
+            Pipeline("phase1-tts-b2")
+            .step(
+                tts,
+                model="tts-1",
+                prompt="This is a ReelProof Phase 1 audio verification clip.",
+                modality=Modality.AUDIO,
+                voice="nova",
+                response_format="mp3",
+            )
+            .run(sink=sink, timeout=90)
+        )
+        tts_verified = tts_result.manifest.verify()
+        report("TTS -> B2 -> manifest.verify()", tts_verified, tts_result.run.run_id)
+
+        print(
+            "\nPhase 1 live primitives passed."
+            if image_verified and tts_verified
+            else "\nPhase 1 live primitives failed."
+        )
+        return bool(image_verified and tts_verified)
+    except Exception as exc:
+        report("Phase 1 live smoke", False, str(exc))
+        return False
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="ReelProof Phase 1 checks")
+    parser.add_argument(
+        "--live", action="store_true", help="run paid image and TTS provider checks"
+    )
+    args = parser.parse_args()
+
+    passed = preflight()
+    if args.live:
+        passed = live_smoke() and passed
+    return 0 if passed else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

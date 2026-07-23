@@ -86,7 +86,7 @@ server/
 
 **Phase 0 — Day 0 setup (gating).** Activate `server/.venv`; `pip install -r requirements.txt`; add missing keys to `.env` (OpenAI/B2/ElevenLabs/Stability); create B2 bucket **with Object Lock enabled**; run stock examples (`quickstart.py`, `dalle_image_pipeline.py`, `b2_storage_pipeline.py`, `elevenlabs_tts_pipeline.py`, `fan_in_av_composite.py`) to confirm each provider + B2 + ffmpeg + **the installed 0.4.3 API**. Exit: every provider works in isolation and the 0.4.3 signatures match (or deltas noted).
 
-**Phase 1 — Primitives + storage.** `config.py`, `storage.py` (`build_sink`). Prove: 1 image → B2 → `manifest.verify()==True`; 1 TTS clip; mux image+audio via `FFmpegCompositor`. Register pricing so `cost_usd` populates.
+**Phase 1 — Primitives + storage.** `config.py`, `storage.py` (`build_sink`). Prove: 1 image → B2 → `manifest.verify()==True`; 1 TTS clip → B2 → verified manifest. Register pricing so `cost_usd` populates. Confirm `ffmpeg` is available. The actual `FFmpegCompositor` proof moves to Phase 2: its documented contract is **video + audio**, so it cannot mux an image directly with audio until the slideshow builder has converted each still into a video stream.
 
 **Phase 2 — Slideshow happy-path (no judge).** `planner.py` (BeatPlan JSON), `beat_render.py` (t2i per beat), `captions.py`, `audio.py`, **`assemble.py` (custom ffmpeg slideshow builder — the hard part)**, `run_engine.py` (sync). Exit: topic in → full slideshow MP4 in B2. **This is the always-works floor.**
 
