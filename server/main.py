@@ -1,15 +1,30 @@
-import os
-from dotenv import load_dotenv
+from __future__ import annotations
 
-# Load variables from .env file
-load_dotenv()
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 
-# Now you can access the API key
-api_key = os.getenv("GMI_API_KEY")
+from app.api.routes import router
+from app.jobs.store import init_db
 
-# Verify it's loaded (optional)
-if api_key:
-    print("API key loaded successfully!")
-    # print(f"API Key: {api_key[:5]}...{api_key[-5:]}") # Uncomment to see a snippet
-else:
-    print("API key not found. Check your .env file.")
+app = FastAPI(title="ReelProof API", version="0.1.0")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:5173", "http://localhost:4173"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+
+@app.on_event("startup")
+async def startup() -> None:
+    init_db()
+
+
+app.include_router(router)
+
+
+@app.get("/health")
+async def health() -> dict:
+    return {"status": "ok"}
