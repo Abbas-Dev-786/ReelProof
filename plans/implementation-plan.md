@@ -102,6 +102,20 @@ server/
 
 ## Verification
 
+## Delivery status (2026-07-24)
+
+- Phases 1–7 are implemented in the repository, including POV captions and
+  quality-loop retries, optional ElevenLabs narration, durable intermediate
+  assets, checkpoint recovery, and showcase automation.
+- The local automated suite, type checks, linting, and production frontend
+  build pass. A live provider/B2/ffmpeg acceptance run remains required before
+  calling the deployment demo-ready: this workspace has no provider or B2
+  credentials, no Object-Lock-enabled bucket confirmation, and no `ffmpeg` or
+  `ffprobe` executable.
+- `scripts/pregenerate_showcases.py` is the intentional final step once that
+  environment is configured; it creates the two slideshow and one POV assets
+  required by the demo plan.
+
 - **Per phase, run the engine for real** against one topic and confirm the MP4 plays and `manifest.verify() == True`.
 - Storage: after a run, `sink.read_manifest(run).verify()` and open the asset URL in a browser (needs `public_url_base` or presign).
 - Judge loop: seed a deliberately weak beat; confirm a `agent.iteration.evaluated` (fail) → regenerate → pass in the stream, and `parent_run_id` chain in the manifest.

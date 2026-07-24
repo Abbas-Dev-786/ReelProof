@@ -8,6 +8,23 @@ from pathlib import Path
 from ..config import settings
 
 
+def caption_drawtext_filter(caption: str) -> str:
+    """Return the shared, 9:16-safe ffmpeg drawtext filter for a caption."""
+    wrapped = _wrap(caption, width=30)
+    escaped = _ffmpeg_escape(wrapped)
+    return (
+        f"drawtext=text='{escaped}'"
+        ":fontcolor=white"
+        ":fontsize=h*0.055"
+        ":x=(w-text_w)/2"
+        ":y=h*0.80"
+        ":box=1"
+        ":boxcolor=black@0.55"
+        ":boxborderw=12"
+        ":line_spacing=6"
+    )
+
+
 def burn_caption(
     image_url: str, caption: str, beat_index: int, output_dir: str | Path | None = None
 ) -> str:
@@ -23,23 +40,10 @@ def burn_caption(
 
     out_path = target_dir / f"beat_{beat_index:02d}_captioned.png"
 
-    # 9:16 safe-zone: x=w*0.05 keeps text ~5% from left edge
-    # fontsize scales to ~5% of height; wrap at ~30 chars per line
-    wrapped = _wrap(caption, width=30)
-    escaped = _ffmpeg_escape(wrapped)
-
     video_filter = (
         f"scale={settings.slideshow_width}:{settings.slideshow_height}:force_original_aspect_ratio=increase,"
         f"crop={settings.slideshow_width}:{settings.slideshow_height},"
-        f"drawtext=text='{escaped}'"
-        ":fontcolor=white"
-        ":fontsize=h*0.055"
-        ":x=(w-text_w)/2"
-        ":y=h*0.80"
-        ":box=1"
-        ":boxcolor=black@0.55"
-        ":boxborderw=12"
-        ":line_spacing=6"
+        f"{caption_drawtext_filter(caption)}"
     )
     cmd = [
         "ffmpeg",

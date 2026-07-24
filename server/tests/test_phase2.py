@@ -7,7 +7,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from app.config import settings
-from app.engine.assemble import _build_video_filter, assemble_slideshow
+from app.engine.assemble import _build_video_filter, assemble_pov_montage, assemble_slideshow
 from app.engine.captions import _ffmpeg_escape, _wrap
 from app.engine.planner import parse_beat_plan, plan_beats
 from app.engine.run_engine import run_campaign
@@ -89,6 +89,15 @@ class LocalRenderGuardTests(unittest.TestCase):
     def test_assemble_requires_at_least_one_image(self) -> None:
         with self.assertRaisesRegex(ValueError, "without captioned images"):
             assemble_slideshow([], "file:///missing.mp3", 3.5)
+
+    def test_pov_captions_must_match_clip_count(self) -> None:
+        with self.assertRaisesRegex(ValueError, "must match"):
+            assemble_pov_montage(
+                ["file:///one.mp4"],
+                "file:///music.mp3",
+                5,
+                captions=["first", "second"],
+            )
 
     def test_assemble_fails_before_ffmpeg_when_a_frame_is_missing(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

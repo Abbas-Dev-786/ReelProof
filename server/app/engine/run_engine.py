@@ -12,8 +12,8 @@ from ..jobs.store import complete_checkpoint, pending_checkpoints, save_checkpoi
 from ..schemas import BeatPlan, BeatResult, CampaignResult, JobStatus, RenderMode
 from ..storage import build_sink
 from .assemble import assemble_pov_montage, assemble_slideshow
-from .audio import generate_music
-from .beat_render import POVBeatRender, render_pov_beat, resume_pov_video
+from .audio import GeneratedAudio, generate_music_asset, generate_voiceover_asset
+from .beat_render import POVBeatRender, resume_pov_video, run_pov_beat_loop
 from .captions import burn_caption
 from .loop import run_beat_loop
 from .planner import plan_beats
@@ -61,6 +61,69 @@ def _store_final_reel(
     )
 
 
+def _store_local_intermediate(
+    *,
+    job_id: str,
+    topic: str,
+    mode: RenderMode,
+    path: str,
+    media_type: str,
+    asset_kind: str,
+    record_provenance: Callable[[dict[str, Any]], None] | None,
+) -> str:
+    """Persist a local assembly artifact and record its verified manifest.
+
+    ffmpeg outputs are local by design, but they are still user-visible assets.
+    Persisting them closes the provenance gap between provider outputs and the
+    final reel without exposing temporary paths through the API.
+    """
+    asset = Asset(url=Path(path).resolve().as_uri(), media_type=media_type)
+    ensure_assets_allowed([asset])
+    result = Pipeline.ingest(
+        assets=[asset],
+        source="reelproof-intermediate",
+        source_metadata={
+            "job_id": job_id,
+            "topic": topic,
+            "mode": mode.value,
+            "asset_kind": asset_kind,
+        },
+        sink=build_sink(),
+        name=f"reelproof-{asset_kind}-{job_id}",
+    )
+    if not result.manifest.verify():
+        raise RuntimeError(f"{asset_kind} manifest failed verification")
+    if record_provenance:
+        record_provenance(
+            {
+                "run_id": result.run.run_id,
+                "manifest_json": result.manifest.model_dump_json(),
+                "manifest_hash": result.manifest.canonical_hash,
+                "manifest_uri": result.manifest.manifest_uri,
+                "parent_run_id": result.run.parent_run_id,
+            }
+        )
+    return str(result.run.steps[0].assets[0].url)
+
+
+def _record_generated_audio(
+    audio: GeneratedAudio | None,
+    record_provenance: Callable[[dict[str, Any]], None] | None,
+) -> None:
+    """Attach a durable audio pipeline's manifest to the campaign lineage."""
+    if audio is None or not audio.run_id or not record_provenance:
+        return
+    record_provenance(
+        {
+            "run_id": audio.run_id,
+            "manifest_json": audio.manifest_json or "{}",
+            "manifest_hash": audio.manifest_hash or "",
+            "manifest_uri": audio.manifest_uri,
+            "parent_run_id": audio.parent_run_id,
+        }
+    )
+
+
 async def _render_or_resume_pov_beat(
     *,
     job_id: str,
@@ -69,6 +132,7 @@ async def _render_or_resume_pov_beat(
     product_assets: Sequence[Asset] | None,
     checkpoints: list[dict[str, Any]],
     emit: Callable[[str, dict[str, Any]], None],
+    record_provenance: Callable[[dict[str, Any]], None] | None,
 ) -> POVBeatRender:
     """Resume an accepted video request when possible; otherwise render it once."""
     matching_checkpoint = next(
@@ -82,30 +146,45 @@ async def _render_or_resume_pov_beat(
     )
     if matching_checkpoint is not None:
         emit("beat.resuming", {"beat_index": beat.index})
-        rendered = await resume_pov_video(matching_checkpoint)
+        rendered = await resume_pov_video(matching_checkpoint, sink=sink)
         complete_checkpoint(job_id, matching_checkpoint["step_id"])
         emit("beat.resumed", {"beat_index": beat.index, "video_url": rendered.video_url})
         return rendered
 
-    checkpoint_step_id: str | None = None
+    checkpoint_step_ids: list[str] = []
 
     def checkpoint_video(
         step_id: str, prediction_id: Any, payload: dict[str, Any]
     ) -> None:
-        nonlocal checkpoint_step_id
-        checkpoint_step_id = step_id
+        checkpoint_step_ids.append(step_id)
         save_checkpoint(job_id, step_id, prediction_id, payload)
         emit("beat.checkpointed", {"beat_index": beat.index, "step_id": step_id})
 
-    rendered = await render_pov_beat(
+    def record_iteration(record: dict[str, Any]) -> None:
+        if record_provenance:
+            record_provenance(record)
+        emit(
+            "beat.judged",
+            {
+                "beat_index": beat.index,
+                "iteration": record["iteration"],
+                "score": record["score"],
+                "passed": record["passed"],
+                "feedback": record["feedback"],
+                "run_id": record["run_id"],
+            },
+        )
+
+    rendered = await run_pov_beat_loop(
         beat,
         job_id=job_id,
         sink=sink,
         product_assets=product_assets,
         on_video_submitted=checkpoint_video,
+        on_iteration=record_iteration,
     )
-    if checkpoint_step_id is not None:
-        complete_checkpoint(job_id, checkpoint_step_id)
+    for step_id in checkpoint_step_ids:
+        complete_checkpoint(job_id, step_id)
     return rendered
 
 
@@ -138,6 +217,7 @@ def _run_pov_campaign(
                     product_assets=product_assets,
                     checkpoints=checkpoints,
                     emit=emit,
+                    record_provenance=record_provenance,
                 )
 
         return await asyncio.gather(*(render_one(beat) for beat in beat_plan.beats))
@@ -162,8 +242,9 @@ def _run_pov_campaign(
                 index=beat.index,
                 image_url=rendered.image_url,
                 video_url=rendered.video_url,
-                judge_iterations=1,
-                passed=True,
+                judge_score=rendered.judge_score,
+                judge_iterations=rendered.judge_iterations,
+                passed=rendered.passed,
             )
         )
         emit(
@@ -177,17 +258,32 @@ def _run_pov_campaign(
         emit("beat.completed", {"beat_index": beat.index})
 
     emit("step.started", {"step": "audio", "message": "Generating music..."})
-    music_url = generate_music(
-        topic, duration_sec=len(rendered_beats) * settings.pov_clip_duration_sec
+    music = generate_music_asset(
+        topic,
+        duration_sec=len(rendered_beats) * settings.pov_clip_duration_sec,
+        sink=build_sink(),
+        job_id=job_id,
     )
+    _record_generated_audio(music, record_provenance)
     emit("step.completed", {"step": "audio"})
+
+    emit("step.started", {"step": "voiceover", "message": "Generating voiceover..."})
+    voiceover = generate_voiceover_asset(
+        [beat.vo for beat in beat_plan.beats if beat.vo],
+        sink=build_sink(),
+        job_id=job_id,
+    )
+    _record_generated_audio(voiceover, record_provenance)
+    emit("step.completed", {"step": "voiceover", "enabled": voiceover is not None})
 
     emit("step.started", {"step": "assemble", "message": "Assembling POV montage..."})
     reel_path = assemble_pov_montage(
         [rendered.video_url for rendered in rendered_beats],
-        music_url,
+        music.url,
         settings.pov_clip_duration_sec,
         output_dir=work_dir,
+        captions=[beat.caption for beat in beat_plan.beats],
+        voiceover_url=voiceover.url if voiceover else None,
     )
     emit("step.completed", {"step": "assemble", "path": reel_path})
 
@@ -210,7 +306,7 @@ def _run_pov_campaign(
         beat_plan=beat_plan,
         beats=beat_results,
         reel_url=reel_url,
-        music_url=music_url,
+        music_url=music.url,
         suggested_caption=beat_plan.suggested_caption,
         hashtags=beat_plan.hashtags,
         manifest_hash=manifest_hash,
@@ -308,14 +404,21 @@ def run_campaign(
             # Burn caption
             captioned_path = burn_caption(url, beat.caption, beat.index, output_dir=work_dir)
             captioned_paths.append(captioned_path)
+            captioned_url = _store_local_intermediate(
+                job_id=job_id,
+                topic=topic,
+                mode=mode,
+                path=captioned_path,
+                media_type="image/png",
+                asset_kind=f"captioned-beat-{beat.index}",
+                record_provenance=record_provenance,
+            )
 
             beat_results.append(
                 BeatResult(
                     index=beat.index,
                     image_url=url,
-                    # Captioned frames are local assembly intermediates in Phase 2.
-                    # Phase 3 will persist them and expose durable asset URLs.
-                    captioned_url=None,
+                    captioned_url=captioned_url,
                     judge_score=loop_result.score,
                     judge_iterations=loop_result.iterations,
                     passed=loop_result.passed,
@@ -326,16 +429,29 @@ def run_campaign(
         # 3. Music
         emit("step.started", {"step": "audio", "message": "Generating music..."})
         total_dur = len(beat_plan.beats) * settings.slideshow_beat_duration_sec
-        music_url = generate_music(topic, duration_sec=total_dur)
+        music = generate_music_asset(
+            topic, duration_sec=total_dur, sink=build_sink(), job_id=job_id
+        )
+        _record_generated_audio(music, record_provenance)
         emit("step.completed", {"step": "audio"})
+
+        emit("step.started", {"step": "voiceover", "message": "Generating voiceover..."})
+        voiceover = generate_voiceover_asset(
+            [beat.vo for beat in beat_plan.beats if beat.vo],
+            sink=build_sink(),
+            job_id=job_id,
+        )
+        _record_generated_audio(voiceover, record_provenance)
+        emit("step.completed", {"step": "voiceover", "enabled": voiceover is not None})
 
         # 4. Assemble
         emit("step.started", {"step": "assemble", "message": "Assembling slideshow..."})
         reel_path = assemble_slideshow(
             captioned_paths,
-            music_url,
+            music.url,
             settings.slideshow_beat_duration_sec,
             output_dir=work_dir,
+            voiceover_url=voiceover.url if voiceover else None,
         )
         emit("step.completed", {"step": "assemble", "path": reel_path})
 
@@ -361,6 +477,7 @@ def run_campaign(
             beat_plan=beat_plan,
             beats=beat_results,
             reel_url=reel_b2_url,
+            music_url=music.url,
             suggested_caption=beat_plan.suggested_caption,
             hashtags=beat_plan.hashtags,
             manifest_hash=manifest_hash,

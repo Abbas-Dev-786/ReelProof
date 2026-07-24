@@ -5,6 +5,7 @@ import unittest
 from genblaze_core import Asset
 
 from app.engine.beat_render import _image_provider, _video_provider
+from app.engine.captions import caption_drawtext_filter
 from app.engine.safety import ContentSafetyError, ensure_assets_allowed, ensure_prompt_allowed
 
 
@@ -25,6 +26,11 @@ class ReliabilityAndSafetyTests(unittest.TestCase):
 
     def test_output_moderation_accepts_standard_render_asset(self) -> None:
         ensure_assets_allowed([Asset(url="https://example.test/reel.mp4", media_type="video/mp4")])
+
+    def test_shared_caption_filter_escapes_unsafe_ffmpeg_characters(self) -> None:
+        filter_text = caption_drawtext_filter("Save 20%: it's time")
+        self.assertIn(r"20\%\: it\'s", filter_text)
+        self.assertIn("y=h*0.80", filter_text)
 
 
 if __name__ == "__main__":

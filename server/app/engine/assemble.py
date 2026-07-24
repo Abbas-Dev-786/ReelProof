@@ -6,6 +6,7 @@ import urllib.request
 from pathlib import Path
 
 from ..config import settings
+from .captions import caption_drawtext_filter
 
 
 def _build_video_filter(
@@ -50,6 +51,7 @@ def assemble_slideshow(
     music_url: str,
     beat_duration: float,
     output_dir: str | Path | None = None,
+    voiceover_url: str | None = None,
 ) -> str:
     """
     Concat N captioned stills into a timed 9:16 MP4 with background music.
@@ -76,11 +78,15 @@ def assemble_slideshow(
     video_filter, total_duration = _build_video_filter(n, beat_duration, transition_duration)
     out_path = target_dir / "reel_slideshow.mp4"
 
-    # --- Download music ---
+    # --- Download audio sources ---
     music_suffix = Path(music_url.split("?")[0]).suffix or ".mp3"
     with tempfile.NamedTemporaryFile(delete=False, suffix=music_suffix, dir=target_dir) as f:
         urllib.request.urlretrieve(music_url, f.name)
         music_path = Path(f.name)
+    voiceover_path: Path | None = None
+    if voiceover_url:
+        voiceover_suffix = Path(voiceover_url.split("?")[0]).suffix or ".mp3"
+        voiceover_path = _download_asset(voiceover_url, target_dir, voiceover_suffix)
 
     # --- Build ffmpeg input args ---
     # Each image as a looped video source for beat_duration seconds
@@ -100,13 +106,23 @@ def assemble_slideshow(
 
     # Music repeats if the provider returned a shorter track than the reel.
     input_args += ["-stream_loop", "-1", "-i", str(music_path)]
-    music_index = n  # music is the last input
+    music_index = n
+    if voiceover_path:
+        input_args += ["-i", str(voiceover_path)]
 
     filter_complex = (
         video_filter
         # Trim looped music to match the exact reel duration.
-        + f";[{music_index}:a]atrim=duration={total_duration},asetpts=PTS-STARTPTS,volume=0.4[aout]"
+        + f";[{music_index}:a]atrim=duration={total_duration},asetpts=PTS-STARTPTS,volume=0.4[music]"
     )
+    if voiceover_path:
+        filter_complex += (
+            f";[{music_index + 1}:a]atrim=duration={total_duration},asetpts=PTS-STARTPTS,"
+            "volume=1.0[voice];[music][voice]amix=inputs=2:duration=longest:"
+            "weights='0.4 1.0',alimiter=limit=0.95[aout]"
+        )
+    else:
+        filter_complex += ";[music]anull[aout]"
 
     cmd = [
         "ffmpeg",
@@ -141,6 +157,8 @@ def assemble_slideshow(
         return str(out_path)
     finally:
         music_path.unlink(missing_ok=True)
+        if voiceover_path:
+            voiceover_path.unlink(missing_ok=True)
 
 
 def _download_asset(url: str, target_dir: Path, suffix: str) -> Path:
@@ -184,6 +202,8 @@ def assemble_pov_montage(
     music_url: str,
     clip_duration: int,
     output_dir: str | Path | None = None,
+    captions: list[str] | None = None,
+    voiceover_url: str | None = None,
 ) -> str:
     """Normalize, concatenate, and score image-to-video clips into a vertical MP4.
 
@@ -195,6 +215,8 @@ def assemble_pov_montage(
         raise ValueError("Cannot assemble a POV montage without video clips")
     if clip_duration <= 0:
         raise ValueError("clip_duration must be greater than zero")
+    if captions is not None and len(captions) != len(clip_urls):
+        raise ValueError("POV captions must match the number of video clips")
 
     target_dir = Path(output_dir or settings.output_dir)
     target_dir.mkdir(parents=True, exist_ok=True)
@@ -207,16 +229,22 @@ def assemble_pov_montage(
         music_suffix = Path(music_url.split("?")[0]).suffix or ".mp3"
         music_path = _download_asset(music_url, target_dir, f"-music{music_suffix}")
         downloaded_paths.append(music_path)
+        voiceover_path: Path | None = None
+        if voiceover_url:
+            voiceover_suffix = Path(voiceover_url.split("?")[0]).suffix or ".mp3"
+            voiceover_path = _download_asset(voiceover_url, target_dir, voiceover_suffix)
+            downloaded_paths.append(voiceover_path)
 
         filter_parts: list[str] = []
         concat_inputs: list[str] = []
         fps = settings.slideshow_fps
-        for index, clip_path in enumerate(downloaded_paths[:-1]):
+        for index, clip_path in enumerate(downloaded_paths[: len(clip_urls)]):
+            caption_filter = f",{caption_drawtext_filter(captions[index])}" if captions else ""
             filter_parts.append(
                 f"[{index}:v:0]scale={settings.slideshow_width}:{settings.slideshow_height}:"
                 f"force_original_aspect_ratio=increase,crop={settings.slideshow_width}:"
                 f"{settings.slideshow_height},setsar=1,fps={fps},format=yuv420p,"
-                f"trim=duration={clip_duration},setpts=PTS-STARTPTS[v{index}]"
+                f"trim=duration={clip_duration},setpts=PTS-STARTPTS{caption_filter}[v{index}]"
             )
             if _has_audio_stream(clip_path):
                 filter_parts.append(
@@ -240,14 +268,32 @@ def assemble_pov_montage(
             f"[{music_index}:a]atrim=duration={total_duration},asetpts=PTS-STARTPTS,"
             "volume=0.35[music]"
         )
-        filter_parts.append(
-            "[clips_a][music]amix=inputs=2:duration=first:weights='0.55 0.35',"
-            "alimiter=limit=0.95[aout]"
-        )
+        if voiceover_path:
+            voiceover_index = music_index + 1
+            filter_parts.append(
+                f"[{voiceover_index}:a]atrim=duration={total_duration},asetpts=PTS-STARTPTS,"
+                "volume=1.0[voice]"
+            )
+            filter_parts.append(
+                "[clips_a][music][voice]amix=inputs=3:duration=longest:weights='0.55 0.35 1.0',"
+                "alimiter=limit=0.95[aout]"
+            )
+        else:
+            filter_parts.append(
+                "[clips_a][music]amix=inputs=2:duration=first:weights='0.55 0.35',"
+                "alimiter=limit=0.95[aout]"
+            )
 
         output_path = target_dir / "reel_pov_montage.mp4"
-        input_args = [argument for clip_path in downloaded_paths[:-1] for argument in ("-i", str(clip_path))]
+        # Keep the music looping; voiceover is supplied once and mixed separately.
+        input_args = [
+            argument
+            for clip_path in downloaded_paths[:clip_count]
+            for argument in ("-i", str(clip_path))
+        ]
         input_args.extend(["-stream_loop", "-1", "-i", str(music_path)])
+        if voiceover_path:
+            input_args.extend(["-i", str(voiceover_path)])
         result = subprocess.run(
             [
                 "ffmpeg",

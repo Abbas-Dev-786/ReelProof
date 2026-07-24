@@ -49,10 +49,19 @@ class VisionJudge(Evaluator):
             raise RuntimeError("NVIDIA_API_KEY is required for the Phase 4 vision judge")
 
         steps = result.run.steps
-        if not steps or not steps[-1].assets:
+        image_asset = next(
+            (
+                asset
+                for step in reversed(steps)
+                for asset in step.assets
+                if str(getattr(asset, "media_type", "image/")).startswith("image/")
+            ),
+            None,
+        )
+        if image_asset is None:
             return EvaluationResult(passed=False, score=0.0, feedback="No asset produced")
 
-        url = steps[-1].assets[0].url
+        url = image_asset.url
 
         resp = chat(
             settings.nvidia_vision_model,

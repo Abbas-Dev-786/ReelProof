@@ -57,6 +57,14 @@ video fallback model lists are configurable with `GMI_IMAGE_FALLBACK_MODELS`,
 GenBlaze moderation hook screens prompts and asset outputs, while upload assets
 are screened before they are ingested into B2.
 
+Optional narration is controlled by `VOICEOVER_ENABLED`. When enabled, the
+planner's non-empty `vo` beat lines are combined into one ElevenLabs narration
+track, persisted with its own manifest, and mixed with the music bed. Both
+slideshow and POV outputs use the same caption safe-zone; POV renders are also
+run through the bounded visual-quality loop before assembly. Captioned frames,
+music, narration, generated clips, and the final reel are persisted through
+B2-backed GenBlaze runs and recorded in campaign provenance.
+
 ## Operational notes
 
 - `jobs.db`, `output/`, and `data/` are local runtime state and are not committed.
@@ -64,3 +72,6 @@ are screened before they are ingested into B2.
   limits are configured in `.env`.
 - SQLite is suitable for a single API process. Move jobs and event delivery to a
   shared database and queue before running multiple API replicas.
+- Set `B2_OBJECT_LOCK_ENABLED=true` only after enabling Object Lock on the B2
+  bucket itself; a configuration flag cannot retrofit retention to an existing
+  non-lockable bucket.

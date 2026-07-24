@@ -4,14 +4,15 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import Any
 
-from genblaze_core import Asset, Modality, Pipeline
+from genblaze_core import AgentContext, AgentLoop, Asset, Modality, Pipeline
 from genblaze_core.models.step import Step
 from genblaze_core.providers import per_unit
 from genblaze_gmicloud import GMICloudImageProvider, GMICloudVideoProvider
 
 from ..config import settings
 from ..schemas import Beat
-from .safety import image_retry_policy, moderation_hook, video_retry_policy
+from .judge import VisionJudge
+from .safety import ensure_assets_allowed, image_retry_policy, moderation_hook, video_retry_policy
 
 
 def _image_provider() -> GMICloudImageProvider:
@@ -50,6 +51,9 @@ class POVBeatRender:
     manifest_uri: str | None = None
     parent_run_id: str | None = None
     cost_usd: float = 0.0
+    judge_score: float | None = None
+    judge_iterations: int = 1
+    passed: bool = True
 
 
 def render_beat_image(
@@ -228,7 +232,133 @@ async def render_pov_beat(
     )
 
 
-async def resume_pov_video(checkpoint: dict[str, Any]) -> POVBeatRender:
+async def run_pov_beat_loop(
+    beat: Beat,
+    *,
+    job_id: str,
+    sink: Any,
+    product_assets: Sequence[Asset] | None = None,
+    on_video_submitted: Callable[[str, Any, dict[str, Any]], None] | None = None,
+    on_iteration: Callable[[dict[str, Any]], None] | None = None,
+) -> POVBeatRender:
+    """Run image-to-video generation through the same bounded quality loop as stills."""
+    if not settings.gmi_api_key:
+        raise RuntimeError("GMI_API_KEY is required to render POV beats")
+
+    product_input = list(product_assets or [])[:1]
+    latest_image_asset: Asset | None = None
+
+    def on_step_complete(event: Any) -> None:
+        nonlocal latest_image_asset
+        if event.step_index == 0 and event.step.assets:
+            latest_image_asset = event.step.assets[0]
+
+    def build_pipeline(ctx: AgentContext) -> Pipeline:
+        feedback = ctx.last_evaluation.feedback if ctx.last_evaluation else ""
+
+        def on_submit(step_id: str, prediction_id: Any) -> None:
+            if latest_image_asset is None or on_video_submitted is None:
+                return
+            on_video_submitted(
+                step_id,
+                prediction_id,
+                {
+                    "kind": "pov-video",
+                    "beat_index": beat.index,
+                    "model": settings.pov_video_model,
+                    "prompt": _pov_motion_prompt(beat),
+                    "duration": settings.pov_clip_duration_sec,
+                    "aspect_ratio": "9:16",
+                    "source_asset": latest_image_asset.model_dump(mode="json"),
+                },
+            )
+
+        style_suffix = feedback or ""
+        return (
+            Pipeline(
+                f"pov-beat-{job_id}-{beat.index}-iter-{ctx.iteration}",
+                chain=True,
+                moderation=moderation_hook(),
+            )
+            .step(
+                _image_provider(),
+                model=settings.gmi_product_image_model if product_input else settings.gmi_image_model,
+                prompt=_pov_image_prompt(beat, style_suffix, bool(product_input)),
+                modality=Modality.IMAGE,
+                aspect_ratio="9:16",
+                external_inputs=product_input or None,
+                fallback_models=(
+                    settings.gmi_product_image_fallback_model_list
+                    if product_input
+                    else settings.gmi_image_fallback_model_list
+                ),
+                metadata={"job_id": job_id, "beat_index": beat.index, "render_mode": "pov"},
+            )
+            .step(
+                _video_provider(),
+                model=settings.pov_video_model,
+                prompt=_pov_motion_prompt(beat),
+                modality=Modality.VIDEO,
+                duration=settings.pov_clip_duration_sec,
+                aspect_ratio="9:16",
+                fallback_models=settings.pov_video_fallback_model_list,
+                metadata={"job_id": job_id, "beat_index": beat.index, "render_mode": "pov"},
+            )
+            .config({"on_submit": on_submit})
+        )
+
+    agent_result = await AgentLoop(
+        build_pipeline,
+        VisionJudge(),
+        max_iterations=settings.max_agent_iterations,
+    ).arun(
+        sink=sink,
+        timeout=settings.pov_pipeline_timeout_sec,
+        pipeline_timeout=settings.pov_pipeline_timeout_sec,
+        max_retries=settings.video_step_retries,
+        on_step_complete=on_step_complete,
+    )
+    final = agent_result.final
+    steps = final.run.steps
+    if len(steps) != 2 or not steps[0].assets or not steps[1].assets:
+        raise RuntimeError(f"Beat {beat.index}: image-to-video loop returned incomplete assets")
+
+    if on_iteration:
+        for iteration in agent_result.iterations:
+            evaluation = iteration.evaluation
+            on_iteration(
+                {
+                    "beat_index": beat.index,
+                    "iteration": iteration.index,
+                    "run_id": iteration.result.run.run_id,
+                    "manifest_json": iteration.result.manifest.model_dump_json(),
+                    "manifest_hash": iteration.result.manifest.canonical_hash,
+                    "manifest_uri": iteration.result.manifest.manifest_uri,
+                    "parent_run_id": iteration.result.run.parent_run_id,
+                    "score": evaluation.score,
+                    "passed": evaluation.passed,
+                    "feedback": evaluation.feedback,
+                }
+            )
+    final_evaluation = agent_result.iterations[-1].evaluation
+    return POVBeatRender(
+        image_url=str(steps[0].assets[0].url),
+        video_url=str(steps[1].assets[0].url),
+        run_id=final.run.run_id,
+        manifest_json=final.manifest.model_dump_json(),
+        manifest_hash=final.manifest.canonical_hash,
+        manifest_uri=final.manifest.manifest_uri,
+        parent_run_id=final.run.parent_run_id,
+        cost_usd=agent_result.total_cost_usd,
+        judge_score=final_evaluation.score,
+        judge_iterations=len(agent_result.iterations),
+        passed=agent_result.passed,
+    )
+
+
+async def resume_pov_video(
+    checkpoint: dict[str, Any], *, sink: Any | None = None
+) -> POVBeatRender:
     """Resume polling a submitted POV video request without creating a second render."""
     payload = checkpoint["checkpoint"]
     if payload.get("kind") != "pov-video":
@@ -258,8 +388,40 @@ async def resume_pov_video(checkpoint: dict[str, Any]) -> POVBeatRender:
     if not completed.assets:
         raise RuntimeError("Resumed POV video generation returned no assets")
 
+    video_asset = completed.assets[0]
+    ensure_assets_allowed([video_asset])
+    if sink is None:
+        return POVBeatRender(
+            image_url=str(source_asset.url),
+            video_url=str(video_asset.url),
+            cost_usd=completed.cost_usd or 0.0,
+        )
+
+    # aresume returns a provider asset outside the original Pipeline result.
+    # Ingest it explicitly so recovery has the same immutable B2 evidence as a
+    # normally completed image-to-video run.
+    result = Pipeline.ingest(
+        assets=[video_asset],
+        source="reelproof-pov-resume",
+        source_metadata={
+            "job_id": checkpoint["job_id"],
+            "beat_index": int(payload["beat_index"]),
+            "prediction_id": str(checkpoint["prediction_id"]),
+            "source_image_url": str(source_asset.url),
+        },
+        sink=sink,
+        name=f"pov-resume-{checkpoint['job_id']}-{payload['beat_index']}",
+    )
+    if not result.manifest.verify():
+        raise RuntimeError("Resumed POV video manifest failed verification")
+
     return POVBeatRender(
         image_url=str(source_asset.url),
-        video_url=str(completed.assets[0].url),
+        video_url=str(result.run.steps[0].assets[0].url),
+        run_id=result.run.run_id,
+        manifest_json=result.manifest.model_dump_json(),
+        manifest_hash=result.manifest.canonical_hash,
+        manifest_uri=result.manifest.manifest_uri,
+        parent_run_id=result.run.parent_run_id,
         cost_usd=completed.cost_usd or 0.0,
     )

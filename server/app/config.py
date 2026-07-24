@@ -26,6 +26,9 @@ class Settings(BaseSettings):
     gmi_api_key: str = ""
     elevenlabs_api_key: str = ""
     stability_api_key: str = ""
+    voiceover_enabled: bool = False
+    elevenlabs_voice_model: str = "eleven_v3"
+    elevenlabs_voice_id: str = "JBFqnCBsd6RMkjVDRZzb"
 
     # Backblaze B2
     b2_key_id: str = ""
@@ -60,6 +63,7 @@ class Settings(BaseSettings):
     pov_pipeline_timeout_sec: int = 900
     image_step_retries: int = 1
     audio_step_retries: int = 1
+    voiceover_step_retries: int = 1
     video_step_retries: int = 1
 
     # API and operational limits
