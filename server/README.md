@@ -68,10 +68,15 @@ B2-backed GenBlaze runs and recorded in campaign provenance.
 ## Operational notes
 
 - `jobs.db`, `output/`, and `data/` are local runtime state and are not committed.
+- Campaign workers use renewable database leases. On startup, a worker whose
+  lease expired is requeued, including interrupted slideshow and POV jobs.
+  Progress events are stored in SQLite and replayed over SSE with
+  `Last-Event-ID`, so reconnecting clients do not lose their campaign timeline.
 - Product uploads are restricted to JPEG, PNG, and WebP; their byte and pixel
   limits are configured in `.env`.
-- SQLite is suitable for a single API process. Move jobs and event delivery to a
-  shared database and queue before running multiple API replicas.
+- SQLite is suitable for a single-node deployment. For multiple hosts, point
+  all replicas at a shared production database and replace the local worker
+  threads with a managed queue before increasing concurrency.
 - Set `B2_OBJECT_LOCK_ENABLED=true` only after enabling Object Lock on the B2
   bucket itself; a configuration flag cannot retrofit retention to an existing
   non-lockable bucket.

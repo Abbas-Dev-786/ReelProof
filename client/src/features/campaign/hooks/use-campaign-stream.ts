@@ -77,7 +77,8 @@ export function useCampaignStream({ jobId, enabled, onBeatUpdate, onFailed }: St
       void refreshCampaign()
     })
     source.onerror = () => {
-      source.close()
+      // EventSource reconnects and supplies Last-Event-ID automatically.
+      // The server replays durable SQLite events after that cursor.
       void refreshCampaign()
     }
 

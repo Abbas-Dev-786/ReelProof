@@ -65,6 +65,7 @@ class Settings(BaseSettings):
     audio_step_retries: int = 1
     voiceover_step_retries: int = 1
     video_step_retries: int = 1
+    job_lease_seconds: int = 1_800
 
     # API and operational limits
     cors_origins: str = "http://localhost:5173,http://localhost:4173"

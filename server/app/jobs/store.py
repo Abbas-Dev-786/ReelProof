@@ -5,12 +5,21 @@ import sqlite3
 import threading
 from collections.abc import Iterator
 from contextlib import contextmanager
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from ..config import settings
 
 DB_PATH = settings.database_file
 _lock = threading.Lock()
+
+
+def _utc_now() -> str:
+    return datetime.now(UTC).isoformat()
+
+
+def _lease_expiry(lease_seconds: int) -> str:
+    return (datetime.now(UTC) + timedelta(seconds=lease_seconds)).isoformat()
 
 
 @contextmanager
@@ -42,8 +51,20 @@ def init_db() -> None:
                 beat_count  INTEGER NOT NULL DEFAULT 5,
                 result_json TEXT,
                 error       TEXT,
+                started_at  DATETIME,
+                lease_owner TEXT,
+                lease_expires_at DATETIME,
                 created_at  DATETIME DEFAULT CURRENT_TIMESTAMP,
                 updated_at  DATETIME DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS job_events (
+                event_id    INTEGER PRIMARY KEY AUTOINCREMENT,
+                job_id      TEXT NOT NULL,
+                event_type  TEXT NOT NULL,
+                data_json   TEXT NOT NULL,
+                created_at  DATETIME DEFAULT CURRENT_TIMESTAMP
             )
         """)
         conn.execute("""
@@ -92,11 +113,21 @@ def init_db() -> None:
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_provenance_records_parent_run_id ON provenance_records(parent_run_id)"
         )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_job_events_job_event_id ON job_events(job_id, event_id)"
+        )
 
         # Lightweight migration for databases created before beat_count existed.
         columns = {row[1] for row in conn.execute("PRAGMA table_info(jobs)")}
         if "beat_count" not in columns:
             conn.execute("ALTER TABLE jobs ADD COLUMN beat_count INTEGER NOT NULL DEFAULT 5")
+        for column, definition in (
+            ("started_at", "DATETIME"),
+            ("lease_owner", "TEXT"),
+            ("lease_expires_at", "DATETIME"),
+        ):
+            if column not in columns:
+                conn.execute(f"ALTER TABLE jobs ADD COLUMN {column} {definition}")
 
         checkpoint_columns = {row[1] for row in conn.execute("PRAGMA table_info(checkpoints)")}
         if "checkpoint_json" not in checkpoint_columns:
@@ -119,41 +150,93 @@ def create_job(job_id: str, topic: str, mode: str, beat_count: int) -> None:
         )
 
 
-def set_running(job_id: str) -> None:
-    with _lock, _conn() as conn:
-        conn.execute(
-            "UPDATE jobs SET status='running', updated_at=CURRENT_TIMESTAMP WHERE job_id=?",
-            (job_id,),
-        )
-
-
-def claim_job_start(job_id: str) -> bool:
-    """Atomically transition a draft job to running exactly once."""
+def claim_job_start(job_id: str, worker_id: str, lease_seconds: int) -> bool:
+    """Atomically lease a pending job to exactly one worker process."""
     with _lock, _conn() as conn:
         cursor = conn.execute(
             """
-            UPDATE jobs SET status='running', updated_at=CURRENT_TIMESTAMP
+            UPDATE jobs
+            SET status='running',
+                started_at=COALESCE(started_at, ?),
+                lease_owner=?,
+                lease_expires_at=?,
+                updated_at=CURRENT_TIMESTAMP
             WHERE job_id=? AND status='pending'
             """,
-            (job_id,),
+            (_utc_now(), worker_id, _lease_expiry(lease_seconds), job_id),
         )
     return cursor.rowcount == 1
 
 
-def set_result(job_id: str, result_json: str) -> None:
+def renew_job_lease(job_id: str, worker_id: str, lease_seconds: int) -> bool:
+    """Extend a worker lease without allowing another process to steal it."""
     with _lock, _conn() as conn:
-        conn.execute(
-            "UPDATE jobs SET status='done', result_json=?, updated_at=CURRENT_TIMESTAMP WHERE job_id=?",
-            (result_json, job_id),
+        cursor = conn.execute(
+            """
+            UPDATE jobs SET lease_expires_at=?, updated_at=CURRENT_TIMESTAMP
+            WHERE job_id=? AND status='running' AND lease_owner=?
+            """,
+            (_lease_expiry(lease_seconds), job_id, worker_id),
         )
+    return cursor.rowcount == 1
 
 
-def set_failed(job_id: str, error: str) -> None:
+def requeue_expired_jobs() -> int:
+    """Make abandoned, previously-started jobs available for another worker."""
     with _lock, _conn() as conn:
-        conn.execute(
-            "UPDATE jobs SET status='failed', error=?, updated_at=CURRENT_TIMESTAMP WHERE job_id=?",
-            (error, job_id),
+        cursor = conn.execute(
+            """
+            UPDATE jobs
+            SET status='pending', lease_owner=NULL, lease_expires_at=NULL,
+                updated_at=CURRENT_TIMESTAMP
+            WHERE status='running' AND lease_expires_at IS NOT NULL AND lease_expires_at < ?
+            """,
+            (_utc_now(),),
         )
+    return cursor.rowcount
+
+
+def recoverable_jobs() -> list[dict[str, Any]]:
+    """Return started jobs that were requeued after a worker lease expired."""
+    with _conn() as conn:
+        rows = conn.execute(
+            """
+            SELECT * FROM jobs
+            WHERE status='pending' AND started_at IS NOT NULL
+            ORDER BY created_at, job_id
+            """
+        ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def set_result(job_id: str, result_json: str, worker_id: str | None = None) -> bool:
+    """Complete a job, optionally requiring the caller to still own its lease."""
+    with _lock, _conn() as conn:
+        cursor = conn.execute(
+            """
+            UPDATE jobs
+            SET status='done', result_json=?, lease_owner=NULL, lease_expires_at=NULL,
+                updated_at=CURRENT_TIMESTAMP
+            WHERE job_id=? AND (? IS NULL OR lease_owner=?)
+            """,
+            (result_json, job_id, worker_id, worker_id),
+        )
+    return cursor.rowcount == 1
+
+
+def set_failed(job_id: str, error: str, worker_id: str | None = None) -> bool:
+    """Fail a job, optionally requiring the caller to still own its lease."""
+    with _lock, _conn() as conn:
+        cursor = conn.execute(
+            """
+            UPDATE jobs
+            SET status='failed', error=?, lease_owner=NULL, lease_expires_at=NULL,
+                updated_at=CURRENT_TIMESTAMP
+            WHERE job_id=? AND (? IS NULL OR lease_owner=?)
+            """,
+            (error, job_id, worker_id, worker_id),
+        )
+    return cursor.rowcount == 1
 
 
 def get_job(job_id: str) -> dict[str, Any] | None:
@@ -168,6 +251,44 @@ def get_job(job_id: str) -> dict[str, Any] | None:
         except json.JSONDecodeError as exc:
             raise RuntimeError(f"Job {job_id} has invalid persisted result JSON") from exc
     return d
+
+
+def append_event(job_id: str, event_type: str, data: dict[str, Any]) -> int:
+    """Persist a replayable SSE event before attempting local delivery."""
+    with _lock, _conn() as conn:
+        cursor = conn.execute(
+            "INSERT INTO job_events (job_id, event_type, data_json) VALUES (?,?,?)",
+            (job_id, event_type, json.dumps(data, separators=(",", ":"))),
+        )
+    if cursor.lastrowid is None:
+        raise RuntimeError("Database did not return an event id")
+    return int(cursor.lastrowid)
+
+
+def events_after(job_id: str, event_id: int, limit: int = 100) -> list[dict[str, Any]]:
+    """Read an ordered, bounded batch of persisted job events."""
+    with _conn() as conn:
+        rows = conn.execute(
+            """
+            SELECT event_id, event_type, data_json, created_at
+            FROM job_events
+            WHERE job_id=? AND event_id>?
+            ORDER BY event_id
+            LIMIT ?
+            """,
+            (job_id, event_id, limit),
+        ).fetchall()
+    events: list[dict[str, Any]] = []
+    for row in rows:
+        events.append(
+            {
+                "event_id": row["event_id"],
+                "type": row["event_type"],
+                "data": json.loads(row["data_json"]),
+                "created_at": row["created_at"],
+            }
+        )
+    return events
 
 
 def record_product_asset(

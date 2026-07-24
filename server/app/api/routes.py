@@ -8,7 +8,7 @@ from collections.abc import AsyncGenerator
 from pathlib import Path
 from typing import Annotated
 
-from fastapi import APIRouter, File, HTTPException, UploadFile, status
+from fastapi import APIRouter, File, Header, HTTPException, Query, UploadFile, status
 from fastapi.responses import StreamingResponse
 from genblaze_core import Asset
 from PIL import Image, UnidentifiedImageError
@@ -19,6 +19,7 @@ from ..engine.safety import ContentSafetyError
 from ..jobs.store import (
     claim_job_start,
     create_job,
+    events_after,
     get_job,
     get_provenance,
     lineage_for_job,
@@ -27,7 +28,7 @@ from ..jobs.store import (
     record_product_asset,
     record_provenance,
 )
-from ..jobs.worker import get_queue, launch_worker
+from ..jobs.worker import WORKER_ID, launch_worker
 from ..schemas import (
     CampaignPackageResponse,
     CampaignResult,
@@ -68,7 +69,7 @@ def _start_job(job_id: str) -> None:
     job = get_job(job_id)
     if job is None:
         raise HTTPException(status_code=404, detail="Job not found")
-    if not claim_job_start(job_id):
+    if not claim_job_start(job_id, WORKER_ID, settings.job_lease_seconds):
         raise HTTPException(
             status_code=409, detail=f"Job cannot be started from status {job['status']}"
         )
@@ -82,13 +83,11 @@ def _start_job(job_id: str) -> None:
         )
         for row in list_product_assets(job_id)
     ]
-    loop = asyncio.get_running_loop()
     launch_worker(
         job_id,
         job["topic"],
         RenderMode(job["mode"]),
         job["beat_count"],
-        loop,
         product_assets=assets,
     )
 
@@ -215,22 +214,35 @@ async def upload_product_asset(
 
 
 @router.get("/campaigns/{job_id}/stream")
-async def stream_campaign(job_id: str) -> StreamingResponse:
+async def stream_campaign(
+    job_id: str,
+    after: int = Query(default=0, ge=0),
+    last_event_id: Annotated[str | None, Header()] = None,
+) -> StreamingResponse:
     job = get_job(job_id)
     if job is None:
         raise HTTPException(status_code=404, detail="Job not found")
 
     async def event_gen() -> AsyncGenerator[str, None]:
-        queue = get_queue(job_id)
-        while True:
+        cursor = after
+        if last_event_id:
             try:
-                payload = await asyncio.wait_for(queue.get(), timeout=30)
-                if payload is None:  # sentinel = engine finished
-                    yield "event: done\ndata: {}\n\n"
-                    break
-                yield f"data: {json.dumps(payload, separators=(',', ':'))}\n\n"
-            except TimeoutError:
+                cursor = max(cursor, int(last_event_id))
+            except ValueError:
+                logger.warning("Ignoring invalid Last-Event-ID", extra={"job_id": job_id})
+        while True:
+            events = events_after(job_id, cursor)
+            for event in events:
+                cursor = int(event["event_id"])
+                payload = {"type": event["type"], **event["data"]}
+                yield f"id: {cursor}\ndata: {json.dumps(payload, separators=(',', ':'))}\n\n"
+            current = get_job(job_id)
+            if current and current["status"] in {JobStatus.done.value, JobStatus.failed.value}:
+                yield "event: done\ndata: {}\n\n"
+                break
+            if not events:
                 yield "event: heartbeat\ndata: {}\n\n"
+            await asyncio.sleep(1)
 
     return StreamingResponse(
         event_gen(),
