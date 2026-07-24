@@ -161,7 +161,7 @@ export function CampaignWorkspace({ onOpenVerifier }: CampaignWorkspaceProps) {
               <div className="flex items-center gap-2 text-sm font-semibold text-[#33313a]"><History className="size-4 text-[#74707a]" /> Run activity</div>
               <span className="text-xs text-[#827e87]">Current run</span>
             </div>
-            <GenerationTray stage={stage} beats={beats} />
+            <GenerationTray stage={stage} beats={beats} mode={mode} />
           </aside>
         </div>
       </section>

@@ -15,6 +15,7 @@ from PIL import Image, UnidentifiedImageError
 
 from ..config import settings
 from ..engine.ingest import ingest_product_image
+from ..engine.safety import ContentSafetyError
 from ..jobs.store import (
     claim_job_start,
     create_job,
@@ -172,6 +173,8 @@ async def upload_product_asset(
                 media_type=media_type,
                 job_id=job_id,
             )
+        except ContentSafetyError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
         except Exception as exc:
             logger.exception("Product image ingestion failed", extra={"job_id": job_id})
             raise HTTPException(

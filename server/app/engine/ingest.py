@@ -5,6 +5,7 @@ from pathlib import Path
 from genblaze_core import Asset, Pipeline
 
 from ..storage import build_sink
+from .safety import ensure_assets_allowed
 
 
 def ingest_product_image(
@@ -18,8 +19,11 @@ def ingest_product_image(
     if not local_path.is_file():
         raise FileNotFoundError(f"Upload staging file does not exist: {local_path}")
 
+    upload_asset = Asset(url=local_path.resolve().as_uri(), media_type=media_type)
+    ensure_assets_allowed([upload_asset])
+
     result = Pipeline.ingest(
-        assets=[Asset(url=local_path.resolve().as_uri(), media_type=media_type)],
+        assets=[upload_asset],
         source="reelproof-product-upload",
         source_metadata={"job_id": job_id, "filename": filename},
         sink=build_sink(),

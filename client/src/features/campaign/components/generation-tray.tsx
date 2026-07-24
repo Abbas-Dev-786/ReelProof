@@ -1,14 +1,15 @@
 import { Check, LoaderCircle, Sparkles } from "lucide-react"
 import { Progress, ProgressLabel } from "@/components/ui/progress"
-import type { BeatProgress, GenerationStage } from "../types"
+import type { BeatProgress, GenerationStage, RenderMode } from "../types"
 import { calculateProgress } from "../utils"
 
 type GenerationTrayProps = {
   stage: GenerationStage
   beats: BeatProgress[]
+  mode: RenderMode
 }
 
-export function GenerationTray({ stage, beats }: GenerationTrayProps) {
+export function GenerationTray({ stage, beats, mode }: GenerationTrayProps) {
   const progress = calculateProgress(stage, beats)
 
   return (
@@ -24,14 +25,14 @@ export function GenerationTray({ stage, beats }: GenerationTrayProps) {
           </div>
           <div className="min-w-0 flex-1">
             <p className="truncate text-sm font-medium">{beat.label}</p>
-            <p className="mt-0.5 text-xs text-[#86828c]">{beat.state === "passed" ? "Quality passed" : beat.state === "retrying" ? "Refining from feedback" : beat.state === "working" ? "Generating and judging" : "Queued"}</p>
+            <p className="mt-0.5 text-xs text-[#86828c]">{beat.state === "passed" ? "Quality passed" : beat.state === "retrying" ? "Refining from feedback" : beat.state === "working" ? mode === "pov" ? "Rendering clip asynchronously" : "Generating and judging" : "Queued"}</p>
           </div>
           {beat.score !== undefined && <span className="text-xs font-medium text-[#6d55cf]">{Math.round(beat.score * 100)}%</span>}
         </div>)}
       </div>
       <div className="flex items-start gap-3 border-t border-[#e6e2db] pt-4 text-xs leading-5 text-[#625a7c]">
         <Sparkles className="mt-0.5 size-3.5 shrink-0" />
-        <p>Weak frames automatically regenerate with vision-model feedback. Each attempt stays in the provenance chain.</p>
+        <p>{mode === "pov" ? "Submitted video work is checkpointed so interrupted renders resume polling without a duplicate request." : "Weak frames automatically regenerate with vision-model feedback. Each attempt stays in the provenance chain."}</p>
       </div>
     </div>
   )

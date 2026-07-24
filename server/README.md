@@ -37,6 +37,26 @@ executables without making paid provider calls:
 `smoke_test.py --live` makes paid provider requests and should only be run with
 an approved test account and B2 bucket.
 
+## Demo showcases
+
+Phase 7 includes a repeatable runner for the two slideshow and one POV showcase
+campaigns. It creates real API jobs, waits for their verified B2-backed results,
+and prints durable reel and manifest URLs for the demo runbook.
+
+Before running it, ensure `ffmpeg` and `ffprobe` are on `PATH`, configure the
+NVIDIA, GMI, Stability, and B2 credentials, and start the API in another shell.
+This makes paid provider requests.
+
+```bash
+.venv/bin/python scripts/pregenerate_showcases.py
+```
+
+The API now uses bounded retry policies for images, audio, and video; image and
+video fallback model lists are configurable with `GMI_IMAGE_FALLBACK_MODELS`,
+`GMI_PRODUCT_IMAGE_FALLBACK_MODELS`, and `POV_VIDEO_FALLBACK_MODELS`. A shared
+GenBlaze moderation hook screens prompts and asset outputs, while upload assets
+are screened before they are ingested into B2.
+
 ## Operational notes
 
 - `jobs.db`, `output/`, and `data/` are local runtime state and are not committed.

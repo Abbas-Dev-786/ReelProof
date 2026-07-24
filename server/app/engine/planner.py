@@ -6,6 +6,7 @@ from genblaze_nvidia import chat
 
 from ..config import settings
 from ..schemas import Beat, BeatPlan
+from .safety import ensure_prompt_allowed
 
 _SYSTEM = """\
 You are a faceless short-form content strategist. Given a topic, produce a beat plan for a
@@ -63,6 +64,7 @@ def parse_beat_plan(raw: str, beat_count: int) -> BeatPlan:
 def plan_beats(topic: str, beat_count: int = 5, product_context: str | None = None) -> BeatPlan:
     if not settings.nvidia_api_key:
         raise RuntimeError("NVIDIA_API_KEY is required to plan a campaign")
+    ensure_prompt_allowed(topic)
 
     user_msg = f"Topic: {topic}\nbeat_count: {beat_count}"
     if product_context:

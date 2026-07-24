@@ -18,12 +18,12 @@ export function CampaignDeliverables({ campaign }: CampaignDeliverablesProps) {
         {campaign.beats.map((beat) => {
           const assetUrl = beat.captioned_url ?? beat.image_url
           if (campaign.mode === "pov" && beat.video_url) {
-            return <a className="group relative aspect-[9/12] overflow-hidden rounded-lg bg-[#20202b] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#6f5cc5]" href={beat.video_url} key={beat.index} rel="noreferrer" target="_blank">
+            return <a className="group relative aspect-[9/16] overflow-hidden rounded-lg bg-[#20202b] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#6f5cc5]" href={beat.video_url} key={beat.index} rel="noreferrer" target="_blank">
               <video aria-label={`POV clip ${beat.index + 1}`} className="size-full object-cover" muted playsInline preload="metadata" src={beat.video_url} />
               <span className="absolute inset-x-1 bottom-1.5 flex items-center justify-center gap-1 rounded-md bg-black/55 px-1 py-1 text-[10px] font-medium text-white opacity-0 transition-opacity group-hover:opacity-100"><Play className="size-3 fill-current" />Clip {beat.index + 1}</span>
             </a>
           }
-          return <a className="group relative aspect-[9/12] overflow-hidden rounded-lg bg-[#edeae5] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#6f5cc5]" href={assetUrl} key={beat.index} rel="noreferrer" target="_blank">
+          return <a className="group relative aspect-[9/16] overflow-hidden rounded-lg bg-[#edeae5] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#6f5cc5]" href={assetUrl} key={beat.index} rel="noreferrer" target="_blank">
             <img alt={`Download beat ${beat.index + 1}`} className="size-full object-cover transition-transform duration-300 group-hover:scale-105" src={assetUrl} />
             <span className="absolute inset-x-1 bottom-1.5 flex items-center justify-center gap-1 rounded-md bg-black/55 px-1 py-1 text-[10px] font-medium text-white opacity-0 transition-opacity group-hover:opacity-100"><Image className="size-3" />Scene {beat.index + 1}</span>
           </a>

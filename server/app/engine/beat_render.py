@@ -11,10 +11,13 @@ from genblaze_gmicloud import GMICloudImageProvider, GMICloudVideoProvider
 
 from ..config import settings
 from ..schemas import Beat
+from .safety import image_retry_policy, moderation_hook, video_retry_policy
 
 
 def _image_provider() -> GMICloudImageProvider:
-    provider = GMICloudImageProvider(api_key=settings.gmi_api_key or None)
+    provider = GMICloudImageProvider(
+        api_key=settings.gmi_api_key or None, retry_policy=image_retry_policy()
+    )
     provider.models.register_pricing(
         settings.gmi_image_model, per_unit(settings.gmi_image_unit_cost_usd)
     )
@@ -26,7 +29,9 @@ def _image_provider() -> GMICloudImageProvider:
 
 
 def _video_provider() -> GMICloudVideoProvider:
-    provider = GMICloudVideoProvider(api_key=settings.gmi_api_key or None)
+    provider = GMICloudVideoProvider(
+        api_key=settings.gmi_api_key or None, retry_policy=video_retry_policy()
+    )
     provider.models.register_pricing(
         settings.pov_video_model, per_unit(settings.pov_video_unit_cost_usd)
     )
@@ -69,9 +74,14 @@ def render_beat_image(
         prompt = f"{prompt}. {style_suffix}"
 
     provider = _image_provider()
+    fallback_models = (
+        settings.gmi_product_image_fallback_model_list
+        if product_input
+        else settings.gmi_image_fallback_model_list
+    )
 
     result = (
-        Pipeline(f"beat-{beat.index}-image")
+        Pipeline(f"beat-{beat.index}-image", moderation=moderation_hook())
         .step(
             provider,
             model=settings.gmi_product_image_model if product_input else settings.gmi_image_model,
@@ -79,9 +89,9 @@ def render_beat_image(
             modality=Modality.IMAGE,
             aspect_ratio="9:16",
             external_inputs=product_input or None,
-            fallback_models=["gemini-2.5-flash-image"],
+            fallback_models=fallback_models,
         )
-        .run(timeout=120)
+        .run(timeout=120, max_retries=settings.image_step_retries)
     )
 
     steps = result.run.steps
@@ -164,7 +174,7 @@ async def render_pov_beat(
             )
 
     result = await (
-        Pipeline(f"pov-beat-{job_id}-{beat.index}", chain=True)
+        Pipeline(f"pov-beat-{job_id}-{beat.index}", chain=True, moderation=moderation_hook())
         .step(
             _image_provider(),
             model=settings.gmi_product_image_model if product_input else settings.gmi_image_model,
@@ -172,7 +182,11 @@ async def render_pov_beat(
             modality=Modality.IMAGE,
             aspect_ratio="9:16",
             external_inputs=product_input or None,
-            fallback_models=["gemini-2.5-flash-image"],
+            fallback_models=(
+                settings.gmi_product_image_fallback_model_list
+                if product_input
+                else settings.gmi_image_fallback_model_list
+            ),
             metadata={"job_id": job_id, "beat_index": beat.index, "render_mode": "pov"},
         )
         .step(
@@ -190,6 +204,7 @@ async def render_pov_beat(
             sink=sink,
             timeout=settings.pov_pipeline_timeout_sec,
             pipeline_timeout=settings.pov_pipeline_timeout_sec,
+            max_retries=settings.video_step_retries,
             on_step_complete=on_step_complete,
         )
     )

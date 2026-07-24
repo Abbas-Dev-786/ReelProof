@@ -11,6 +11,7 @@ from genblaze_gmicloud import GMICloudImageProvider
 from ..config import settings
 from ..schemas import Beat
 from .judge import VisionJudge
+from .safety import image_retry_policy, moderation_hook
 
 
 @dataclass(frozen=True)
@@ -23,7 +24,9 @@ class BeatLoopResult:
 
 
 def _image_provider() -> GMICloudImageProvider:
-    provider = GMICloudImageProvider(api_key=settings.gmi_api_key or None)
+    provider = GMICloudImageProvider(
+        api_key=settings.gmi_api_key or None, retry_policy=image_retry_policy()
+    )
     provider.models.register_pricing(
         settings.gmi_image_model, per_unit(settings.gmi_image_unit_cost_usd)
     )
@@ -69,14 +72,21 @@ def run_beat_loop(
             style_suffix,
         )
 
-        return Pipeline(f"beat-{beat.index}-iter-{ctx.iteration}").step(
+        fallback_models = (
+            settings.gmi_product_image_fallback_model_list
+            if product_input
+            else settings.gmi_image_fallback_model_list
+        )
+        return Pipeline(
+            f"beat-{beat.index}-iter-{ctx.iteration}", moderation=moderation_hook()
+        ).step(
             _image_provider(),
             model=settings.gmi_product_image_model if product_input else settings.gmi_image_model,
             prompt=prompt,
             modality=Modality.IMAGE,
             aspect_ratio="9:16",
             external_inputs=product_input or None,
-            fallback_models=["gemini-2.5-flash-image"],
+            fallback_models=fallback_models,
         )
 
     loop = AgentLoop(
@@ -85,7 +95,9 @@ def run_beat_loop(
         max_iterations=settings.max_agent_iterations,
     )
 
-    agent_result = loop.run(sink=sink, timeout=120)
+    agent_result = loop.run(
+        sink=sink, timeout=120, max_retries=settings.image_step_retries
+    )
 
     # The last result is either a pass or the best available bounded attempt.
     last_iter = agent_result.iterations[-1]

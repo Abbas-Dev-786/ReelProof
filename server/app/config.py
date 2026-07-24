@@ -38,8 +38,10 @@ class Settings(BaseSettings):
     parquet_enabled: bool = False  # Phase 3 lineage analytics; requires pyarrow
     gmi_image_model: str = "reve-create-20250915"
     gmi_image_unit_cost_usd: float = 0.007
+    gmi_image_fallback_models: str = "gemini-2.5-flash-image,seedream-5.0-lite"
     gmi_product_image_model: str = "reve-edit-fast-20251030"
     gmi_product_image_unit_cost_usd: float = 0.007
+    gmi_product_image_fallback_models: str = "reve-edit-20250915,reve-remix-fast-20251030"
 
     # Engine
     beat_count: int = 5
@@ -56,6 +58,9 @@ class Settings(BaseSettings):
     pov_clip_duration_sec: int = 5
     pov_max_concurrency: int = 2
     pov_pipeline_timeout_sec: int = 900
+    image_step_retries: int = 1
+    audio_step_retries: int = 1
+    video_step_retries: int = 1
 
     # API and operational limits
     cors_origins: str = "http://localhost:5173,http://localhost:4173"
@@ -95,12 +100,26 @@ class Settings(BaseSettings):
     @property
     def pov_video_fallback_model_list(self) -> list[str]:
         """Return de-duplicated, configured fallbacks for image-to-video renders."""
+        return self._model_list(self.pov_video_fallback_models, self.pov_video_model)
+
+    @staticmethod
+    def _model_list(raw_models: str, primary_model: str) -> list[str]:
         return list(
             dict.fromkeys(
                 model.strip()
-                for model in self.pov_video_fallback_models.split(",")
-                if model.strip() and model.strip() != self.pov_video_model
+                for model in raw_models.split(",")
+                if model.strip() and model.strip() != primary_model
             )
+        )
+
+    @property
+    def gmi_image_fallback_model_list(self) -> list[str]:
+        return self._model_list(self.gmi_image_fallback_models, self.gmi_image_model)
+
+    @property
+    def gmi_product_image_fallback_model_list(self) -> list[str]:
+        return self._model_list(
+            self.gmi_product_image_fallback_models, self.gmi_product_image_model
         )
 
     def missing_phase1_settings(self) -> list[str]:

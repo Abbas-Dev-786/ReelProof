@@ -4,6 +4,7 @@ from genblaze_core import Modality, Pipeline
 from genblaze_stability_audio import StabilityAudioProvider
 
 from ..config import settings
+from .safety import audio_retry_policy, moderation_hook
 
 
 def generate_music(topic: str, duration_sec: float = 20.0) -> str:
@@ -15,10 +16,12 @@ def generate_music(topic: str, duration_sec: float = 20.0) -> str:
 
     settings.output_path.mkdir(parents=True, exist_ok=True)
 
-    provider = StabilityAudioProvider(api_key=settings.stability_api_key or None)
+    provider = StabilityAudioProvider(
+        api_key=settings.stability_api_key or None, retry_policy=audio_retry_policy()
+    )
 
     result = (
-        Pipeline("reel-music")
+        Pipeline("reel-music", moderation=moderation_hook())
         .step(
             provider,
             model="stable-audio-2.5",
@@ -26,7 +29,7 @@ def generate_music(topic: str, duration_sec: float = 20.0) -> str:
             modality=Modality.AUDIO,
             duration=duration_sec,
         )
-        .run(timeout=180)
+        .run(timeout=180, max_retries=settings.audio_step_retries)
     )
 
     steps = result.run.steps

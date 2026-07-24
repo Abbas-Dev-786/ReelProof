@@ -17,6 +17,7 @@ from .beat_render import POVBeatRender, render_pov_beat, resume_pov_video
 from .captions import burn_caption
 from .loop import run_beat_loop
 from .planner import plan_beats
+from .safety import ensure_assets_allowed
 
 
 def _store_final_reel(
@@ -30,6 +31,7 @@ def _store_final_reel(
 ) -> tuple[str, str, str | None, str, bool]:
     """Persist the assembled MP4 and its verified manifest in B2."""
     reel_asset = Asset(url=Path(reel_path).resolve().as_uri(), media_type="video/mp4")
+    ensure_assets_allowed([reel_asset])
     store_result = Pipeline.ingest(
         assets=[reel_asset],
         source="reelproof-assembly",

@@ -10,7 +10,7 @@ type StreamOptions = {
   onFailed: (message: string) => void
 }
 
-type StreamEventType = "beat.started" | "beat.judged" | "beat.completed" | "engine.completed" | "engine.failed"
+type StreamEventType = "beat.started" | "beat.judged" | "beat.checkpointed" | "beat.resuming" | "beat.resumed" | "beat.completed" | "engine.completed" | "engine.failed"
 
 type StreamEventPayload = {
   type: StreamEventType
@@ -50,6 +50,7 @@ export function useCampaignStream({ jobId, enabled, onBeatUpdate, onFailed }: St
         const index = payload.beat_index ?? -1
 
         if (payload.type === "beat.started") onBeatUpdate(index, { state: "working" })
+        if (payload.type === "beat.checkpointed" || payload.type === "beat.resuming") onBeatUpdate(index, { state: "working" })
         if (payload.type === "beat.judged") {
           onBeatUpdate(index, {
             state: payload.passed ? "passed" : "retrying",
