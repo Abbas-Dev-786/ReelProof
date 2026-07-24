@@ -3,15 +3,47 @@ from __future__ import annotations
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
 
+from app.config import settings
 from app.engine.assemble import _build_video_filter, assemble_slideshow
 from app.engine.captions import _ffmpeg_escape, _wrap
-from app.engine.planner import parse_beat_plan
+from app.engine.planner import parse_beat_plan, plan_beats
 from app.engine.run_engine import run_campaign
-from app.schemas import JobStatus, RenderMode
+from app.schemas import BeatPlan, JobStatus, RenderMode
 
 
 class PlannerParsingTests(unittest.TestCase):
+    def test_planner_uses_the_configured_text_specialist_and_json_schema(self) -> None:
+        prior_key = settings.nvidia_api_key
+        prior_model = settings.nvidia_planner_model
+        prior_url = settings.nvidia_chat_base_url
+        settings.nvidia_api_key = "test-nvidia-key"
+        settings.nvidia_planner_model = "z-ai/glm-5.2"
+        settings.nvidia_chat_base_url = "https://nim.example.test/v1"
+        try:
+            with patch(
+                "app.engine.planner.chat",
+                return_value=SimpleNamespace(
+                    text=(
+                        '{"hook":"h","beats":[{"index":0,"concept":"c","caption":"x"}],'
+                        '"suggested_caption":"s","hashtags":[]}'
+                    )
+                ),
+            ) as chat:
+                plan = plan_beats("Coffee", beat_count=1)
+        finally:
+            settings.nvidia_api_key = prior_key
+            settings.nvidia_planner_model = prior_model
+            settings.nvidia_chat_base_url = prior_url
+
+        self.assertEqual(plan.hook, "h")
+        self.assertEqual(chat.call_args.args[0], "z-ai/glm-5.2")
+        self.assertIs(chat.call_args.kwargs["response_format"], BeatPlan)
+        self.assertEqual(chat.call_args.kwargs["api_key"], "test-nvidia-key")
+        self.assertEqual(chat.call_args.kwargs["base_url"], "https://nim.example.test/v1")
+
     def test_accepts_fenced_json_with_ordered_beats(self) -> None:
         plan = parse_beat_plan(
             """```json

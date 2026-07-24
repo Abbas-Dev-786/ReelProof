@@ -7,12 +7,45 @@ from unittest.mock import patch
 from genblaze_core import EvaluationResult
 
 from app.config import settings
-from app.engine.judge import parse_judge_scores
+from app.engine.judge import JudgeScoresResponse, VisionJudge, parse_judge_scores
 from app.engine.loop import refine_prompt, run_beat_loop
 from app.schemas import Beat
 
 
 class JudgeResponseTests(unittest.TestCase):
+    def test_judge_uses_the_configured_vision_specialist_and_json_schema(self) -> None:
+        prior_key = settings.nvidia_api_key
+        prior_model = settings.nvidia_vision_model
+        prior_url = settings.nvidia_chat_base_url
+        settings.nvidia_api_key = "test-nvidia-key"
+        settings.nvidia_vision_model = "qwen/qwen3.5-397b-a17b"
+        settings.nvidia_chat_base_url = "https://nim.example.test/v1"
+        result = SimpleNamespace(
+            run=SimpleNamespace(
+                steps=[SimpleNamespace(assets=[SimpleNamespace(url="https://example.test/frame.png")])]
+            )
+        )
+        response = SimpleNamespace(
+            text=(
+                '{"hook_strength":0.8,"text_legibility":0.9,"visual_artifacts":0.7,'
+                '"on_brand":0.85,"overall":0.81,"feedback":null}'
+            )
+        )
+        try:
+            with patch("app.engine.judge.chat", return_value=response) as chat:
+                evaluation = VisionJudge().evaluate(result)
+        finally:
+            settings.nvidia_api_key = prior_key
+            settings.nvidia_vision_model = prior_model
+            settings.nvidia_chat_base_url = prior_url
+
+        self.assertTrue(evaluation.passed)
+        self.assertEqual(chat.call_args.args[0], "qwen/qwen3.5-397b-a17b")
+        self.assertIs(chat.call_args.kwargs["response_format"], JudgeScoresResponse)
+        self.assertEqual(chat.call_args.kwargs["temperature"], 0.1)
+        self.assertEqual(chat.call_args.kwargs["api_key"], "test-nvidia-key")
+        self.assertEqual(chat.call_args.kwargs["base_url"], "https://nim.example.test/v1")
+
     def test_parses_fenced_scores(self) -> None:
         scores = parse_judge_scores(
             """```json

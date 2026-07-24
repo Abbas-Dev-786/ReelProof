@@ -4,7 +4,8 @@ import json
 from typing import Any, cast
 
 from genblaze_core import EvaluationResult, Evaluator
-from genblaze_openai import chat
+from genblaze_nvidia import chat
+from pydantic import BaseModel, ConfigDict, Field
 
 from ..config import settings
 
@@ -27,12 +28,25 @@ bad composition, or inconsistent style aggressively.
 """
 
 
+class JudgeScoresResponse(BaseModel):
+    """JSON schema sent to the VLM; parsing below remains the trust boundary."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    hook_strength: float = Field(ge=0, le=1)
+    text_legibility: float = Field(ge=0, le=1)
+    visual_artifacts: float = Field(ge=0, le=1)
+    on_brand: float = Field(ge=0, le=1)
+    overall: float = Field(ge=0, le=1)
+    feedback: str | None = None
+
+
 class VisionJudge(Evaluator):
-    """Vision-model quality judge. Uses gpt-4o-mini (cheaper, faster) — different from the generator."""
+    """Vision quality judge backed by Qwen's flagship hosted NVIDIA NIM VLM."""
 
     def evaluate(self, result) -> EvaluationResult:
-        if not settings.openai_api_key:
-            raise RuntimeError("OPENAI_API_KEY is required for the Phase 4 vision judge")
+        if not settings.nvidia_api_key:
+            raise RuntimeError("NVIDIA_API_KEY is required for the Phase 4 vision judge")
 
         steps = result.run.steps
         if not steps or not steps[-1].assets:
@@ -41,7 +55,7 @@ class VisionJudge(Evaluator):
         url = steps[-1].assets[0].url
 
         resp = chat(
-            "gpt-4o-mini",
+            settings.nvidia_vision_model,
             messages=[
                 {
                     "role": "user",
@@ -52,7 +66,10 @@ class VisionJudge(Evaluator):
                 }
             ],
             system=_JUDGE_SYSTEM,
-            api_key=settings.openai_api_key or None,
+            temperature=0.1,
+            response_format=JudgeScoresResponse,
+            api_key=settings.nvidia_api_key,
+            base_url=settings.nvidia_chat_base_url or None,
         )
 
         try:

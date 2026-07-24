@@ -15,7 +15,14 @@ class Settings(BaseSettings):
     )
 
     # Providers
+    # OpenAI remains optional for the Phase 1 TTS smoke check only. Campaign
+    # planning and visual evaluation use NVIDIA NIM through GenBlaze.
     openai_api_key: str = ""
+    nvidia_api_key: str = ""
+    nvidia_chat_base_url: str = ""
+    # Specialist NIM models: text planning and multimodal visual evaluation.
+    nvidia_planner_model: str = "z-ai/glm-5.2"
+    nvidia_vision_model: str = "qwen/qwen3.5-397b-a17b"
     gmi_api_key: str = ""
     elevenlabs_api_key: str = ""
     stability_api_key: str = ""

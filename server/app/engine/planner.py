@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 
-from genblaze_openai import chat
+from genblaze_nvidia import chat
 
 from ..config import settings
 from ..schemas import Beat, BeatPlan
@@ -61,19 +61,21 @@ def parse_beat_plan(raw: str, beat_count: int) -> BeatPlan:
 
 
 def plan_beats(topic: str, beat_count: int = 5, product_context: str | None = None) -> BeatPlan:
-    if not settings.openai_api_key:
-        raise RuntimeError("OPENAI_API_KEY is required to plan a campaign")
+    if not settings.nvidia_api_key:
+        raise RuntimeError("NVIDIA_API_KEY is required to plan a campaign")
 
     user_msg = f"Topic: {topic}\nbeat_count: {beat_count}"
     if product_context:
         user_msg += f"\nProduct context: {product_context}"
 
     resp = chat(
-        "gpt-4o",
+        settings.nvidia_planner_model,
         system=_SYSTEM,
         prompt=user_msg,
         temperature=0.8,
-        api_key=settings.openai_api_key or None,
+        response_format=BeatPlan,
+        api_key=settings.nvidia_api_key,
+        base_url=settings.nvidia_chat_base_url or None,
     )
 
     return parse_beat_plan(resp.text, beat_count)

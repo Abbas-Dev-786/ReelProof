@@ -4,6 +4,14 @@ The API creates and tracks short-form campaign generation jobs. It uses SQLite
 for job state, GenBlaze for provenance-aware provider pipelines, and Backblaze
 B2 for durable assets.
 
+Campaign planning uses Z.ai's GLM-5.2 text flagship and frame evaluation uses
+Qwen 3.5 397B, NVIDIA's hosted multimodal NIM model, through
+`genblaze-nvidia`. Each call uses JSON-schema structured output, while local
+validation remains the final trust boundary. Set `NVIDIA_API_KEY` for
+NVIDIA's hosted NIM endpoint, or set `NVIDIA_CHAT_BASE_URL` to an
+OpenAI-compatible self-hosted NIM endpoint. The default model IDs can be
+overridden with `NVIDIA_PLANNER_MODEL` and `NVIDIA_VISION_MODEL`.
+
 ## Local setup
 
 Use Python 3.11 or newer. Create `server/.env` from `.env.example`, then set
