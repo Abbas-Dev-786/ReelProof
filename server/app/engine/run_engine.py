@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Any
@@ -7,13 +8,214 @@ from typing import Any
 from genblaze_core import Asset, Pipeline
 
 from ..config import settings
+from ..jobs.store import complete_checkpoint, pending_checkpoints, save_checkpoint
 from ..schemas import BeatPlan, BeatResult, CampaignResult, JobStatus, RenderMode
 from ..storage import build_sink
-from .assemble import assemble_slideshow
+from .assemble import assemble_pov_montage, assemble_slideshow
 from .audio import generate_music
+from .beat_render import POVBeatRender, render_pov_beat, resume_pov_video
 from .captions import burn_caption
 from .loop import run_beat_loop
 from .planner import plan_beats
+
+
+def _store_final_reel(
+    *,
+    job_id: str,
+    topic: str,
+    mode: RenderMode,
+    reel_path: str,
+    sink: Any,
+    record_provenance: Callable[[dict[str, Any]], None] | None,
+) -> tuple[str, str, str | None, str, bool]:
+    """Persist the assembled MP4 and its verified manifest in B2."""
+    reel_asset = Asset(url=Path(reel_path).resolve().as_uri(), media_type="video/mp4")
+    store_result = Pipeline.ingest(
+        assets=[reel_asset],
+        source="reelproof-assembly",
+        source_metadata={"topic": topic, "mode": mode.value, "job_id": job_id},
+        sink=sink,
+        name=f"reel-store-{job_id}",
+    )
+    verified = store_result.manifest.verify()
+    if not verified:
+        raise RuntimeError("Final campaign manifest failed verification")
+    if record_provenance:
+        record_provenance(
+            {
+                "run_id": store_result.run.run_id,
+                "manifest_json": store_result.manifest.model_dump_json(),
+                "manifest_hash": store_result.manifest.canonical_hash,
+                "manifest_uri": store_result.manifest.manifest_uri,
+                "parent_run_id": store_result.run.parent_run_id,
+            }
+        )
+    return (
+        str(store_result.run.steps[0].assets[0].url),
+        store_result.manifest.canonical_hash,
+        store_result.manifest.manifest_uri,
+        store_result.run.run_id,
+        verified,
+    )
+
+
+async def _render_or_resume_pov_beat(
+    *,
+    job_id: str,
+    beat: Any,
+    sink: Any,
+    product_assets: Sequence[Asset] | None,
+    checkpoints: list[dict[str, Any]],
+    emit: Callable[[str, dict[str, Any]], None],
+) -> POVBeatRender:
+    """Resume an accepted video request when possible; otherwise render it once."""
+    matching_checkpoint = next(
+        (
+            checkpoint
+            for checkpoint in checkpoints
+            if checkpoint["checkpoint"].get("kind") == "pov-video"
+            and checkpoint["checkpoint"].get("beat_index") == beat.index
+        ),
+        None,
+    )
+    if matching_checkpoint is not None:
+        emit("beat.resuming", {"beat_index": beat.index})
+        rendered = await resume_pov_video(matching_checkpoint)
+        complete_checkpoint(job_id, matching_checkpoint["step_id"])
+        emit("beat.resumed", {"beat_index": beat.index, "video_url": rendered.video_url})
+        return rendered
+
+    checkpoint_step_id: str | None = None
+
+    def checkpoint_video(
+        step_id: str, prediction_id: Any, payload: dict[str, Any]
+    ) -> None:
+        nonlocal checkpoint_step_id
+        checkpoint_step_id = step_id
+        save_checkpoint(job_id, step_id, prediction_id, payload)
+        emit("beat.checkpointed", {"beat_index": beat.index, "step_id": step_id})
+
+    rendered = await render_pov_beat(
+        beat,
+        job_id=job_id,
+        sink=sink,
+        product_assets=product_assets,
+        on_video_submitted=checkpoint_video,
+    )
+    if checkpoint_step_id is not None:
+        complete_checkpoint(job_id, checkpoint_step_id)
+    return rendered
+
+
+def _run_pov_campaign(
+    *,
+    job_id: str,
+    topic: str,
+    beat_plan: BeatPlan,
+    emit: Callable[[str, dict[str, Any]], None],
+    sink: Any,
+    work_dir: Path,
+    product_assets: Sequence[Asset] | None,
+    record_provenance: Callable[[dict[str, Any]], None] | None,
+) -> CampaignResult:
+    """Run the long-running POV path in the worker, never in a request handler."""
+    checkpoints = pending_checkpoints(job_id)
+
+    async def render_all() -> list[POVBeatRender]:
+        semaphore = asyncio.Semaphore(settings.pov_max_concurrency)
+
+        async def render_one(beat: Any) -> POVBeatRender:
+            emit("beat.started", {"beat_index": beat.index, "concept": beat.concept})
+            async with semaphore:
+                return await _render_or_resume_pov_beat(
+                    job_id=job_id,
+                    beat=beat,
+                    # Pipeline owns and closes its sink. Each concurrent render
+                    # therefore receives an independent B2 sink instance.
+                    sink=build_sink(),
+                    product_assets=product_assets,
+                    checkpoints=checkpoints,
+                    emit=emit,
+                )
+
+        return await asyncio.gather(*(render_one(beat) for beat in beat_plan.beats))
+
+    rendered_beats = asyncio.run(render_all())
+    total_cost = 0.0
+    beat_results: list[BeatResult] = []
+    for beat, rendered in zip(beat_plan.beats, rendered_beats, strict=True):
+        total_cost += rendered.cost_usd
+        if rendered.run_id and record_provenance:
+            record_provenance(
+                {
+                    "run_id": rendered.run_id,
+                    "manifest_json": rendered.manifest_json or "{}",
+                    "manifest_hash": rendered.manifest_hash or "",
+                    "manifest_uri": rendered.manifest_uri,
+                    "parent_run_id": rendered.parent_run_id,
+                }
+            )
+        beat_results.append(
+            BeatResult(
+                index=beat.index,
+                image_url=rendered.image_url,
+                video_url=rendered.video_url,
+                judge_iterations=1,
+                passed=True,
+            )
+        )
+        emit(
+            "beat.generated",
+            {
+                "beat_index": beat.index,
+                "image_url": rendered.image_url,
+                "video_url": rendered.video_url,
+            },
+        )
+        emit("beat.completed", {"beat_index": beat.index})
+
+    emit("step.started", {"step": "audio", "message": "Generating music..."})
+    music_url = generate_music(
+        topic, duration_sec=len(rendered_beats) * settings.pov_clip_duration_sec
+    )
+    emit("step.completed", {"step": "audio"})
+
+    emit("step.started", {"step": "assemble", "message": "Assembling POV montage..."})
+    reel_path = assemble_pov_montage(
+        [rendered.video_url for rendered in rendered_beats],
+        music_url,
+        settings.pov_clip_duration_sec,
+        output_dir=work_dir,
+    )
+    emit("step.completed", {"step": "assemble", "path": reel_path})
+
+    emit("step.started", {"step": "storage", "message": "Uploading to B2..."})
+    reel_url, manifest_hash, manifest_uri, run_id, verified = _store_final_reel(
+        job_id=job_id,
+        topic=topic,
+        mode=RenderMode.pov,
+        reel_path=reel_path,
+        sink=sink,
+        record_provenance=record_provenance,
+    )
+    emit("step.completed", {"step": "storage", "verified": verified, "run_id": run_id})
+    emit("engine.completed", {"job_id": job_id, "run_id": run_id, "verified": verified})
+    return CampaignResult(
+        job_id=job_id,
+        topic=topic,
+        mode=RenderMode.pov,
+        status=JobStatus.done,
+        beat_plan=beat_plan,
+        beats=beat_results,
+        reel_url=reel_url,
+        music_url=music_url,
+        suggested_caption=beat_plan.suggested_caption,
+        hashtags=beat_plan.hashtags,
+        manifest_hash=manifest_hash,
+        manifest_uri=manifest_uri,
+        run_id=run_id,
+        total_cost_usd=total_cost,
+    )
 
 
 def run_campaign(
@@ -32,9 +234,6 @@ def run_campaign(
     emit("engine.started", {"job_id": job_id, "topic": topic, "mode": mode.value})
 
     try:
-        if mode is not RenderMode.slideshow:
-            raise ValueError("POV montage is planned for Phase 6; use slideshow mode for now")
-
         # A unique work directory prevents simultaneous jobs from overwriting
         # each other's captioned frames and assembled reel.
         work_dir = settings.output_path / job_id
@@ -50,6 +249,18 @@ def run_campaign(
         )
         beat_plan: BeatPlan = plan_beats(topic, beat_count, product_context=product_context)
         emit("step.completed", {"step": "planner", "hook": beat_plan.hook, "beats": beat_count})
+
+        if mode is RenderMode.pov:
+            return _run_pov_campaign(
+                job_id=job_id,
+                topic=topic,
+                beat_plan=beat_plan,
+                emit=emit,
+                sink=sink,
+                work_dir=work_dir,
+                product_assets=product_assets,
+                record_provenance=record_provenance,
+            )
 
         beat_results: list[BeatResult] = []
         captioned_paths: list[str] = []
@@ -128,33 +339,14 @@ def run_campaign(
 
         # 5. Store in B2
         emit("step.started", {"step": "storage", "message": "Uploading to B2..."})
-        reel_asset = Asset(
-            url=Path(reel_path).resolve().as_uri(),
-            media_type="video/mp4",
-        )
-        store_result = Pipeline.ingest(
-            assets=[reel_asset],
-            source="reelproof-assembly",
-            source_metadata={"topic": topic, "mode": mode.value, "job_id": job_id},
+        reel_b2_url, manifest_hash, manifest_uri, run_id, verified = _store_final_reel(
+            job_id=job_id,
+            topic=topic,
+            mode=mode,
+            reel_path=reel_path,
             sink=sink,
-            name=f"reel-store-{job_id}",
+            record_provenance=record_provenance,
         )
-        reel_b2_url = store_result.run.steps[0].assets[0].url
-        manifest_hash = store_result.manifest.canonical_hash
-        run_id = store_result.run.run_id
-        verified = store_result.manifest.verify()
-        if not verified:
-            raise RuntimeError("Final campaign manifest failed verification")
-        if record_provenance:
-            record_provenance(
-                {
-                    "run_id": run_id,
-                    "manifest_json": store_result.manifest.model_dump_json(),
-                    "manifest_hash": manifest_hash,
-                    "manifest_uri": store_result.manifest.manifest_uri,
-                    "parent_run_id": store_result.run.parent_run_id,
-                }
-            )
         emit("step.completed", {"step": "storage", "verified": verified, "run_id": run_id})
 
         emit("engine.completed", {"job_id": job_id, "run_id": run_id, "verified": verified})
@@ -170,7 +362,7 @@ def run_campaign(
             suggested_caption=beat_plan.suggested_caption,
             hashtags=beat_plan.hashtags,
             manifest_hash=manifest_hash,
-            manifest_uri=store_result.manifest.manifest_uri,
+            manifest_uri=manifest_uri,
             run_id=run_id,
             total_cost_usd=total_agent_cost,
         )

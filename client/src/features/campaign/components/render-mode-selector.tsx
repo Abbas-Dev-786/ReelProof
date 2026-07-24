@@ -1,4 +1,4 @@
-import { Image, LockKeyhole, PlaySquare } from "lucide-react"
+import { Image, PlaySquare } from "lucide-react"
 import { cn } from "@/lib/utils"
 import type { RenderMode } from "../types"
 
@@ -16,7 +16,7 @@ const modeOptions: Array<{
   available: boolean
 }> = [
   { value: "slideshow", title: "Slideshow", description: "Captioned stills with motion and music", icon: Image, available: true },
-  { value: "pov", title: "POV montage", description: "Animated scenes, rendered asynchronously", icon: PlaySquare, available: false },
+  { value: "pov", title: "POV montage", description: "Animated scenes, rendered asynchronously", icon: PlaySquare, available: true },
 ]
 
 export function RenderModeSelector({ value, disabled, onChange }: RenderModeSelectorProps) {
@@ -46,12 +46,11 @@ export function RenderModeSelector({ value, disabled, onChange }: RenderModeSele
               <span className={cn("mb-3 grid size-8 place-items-center rounded-lg", isSelected ? "bg-[#e8e2ff] text-[#654fc4]" : "bg-[#f1efea] text-[#736f79]")}><Icon className="size-4" /></span>
               <span className="text-sm font-semibold text-[#35323d]">{option.title}</span>
               <span className="mt-1 text-xs leading-4 text-[#7e7a84]">{option.description}</span>
-              {!option.available && <span className="absolute right-3 top-3 inline-flex items-center gap-1 rounded-full bg-[#f0ede8] px-2 py-1 text-[10px] font-semibold uppercase tracking-[0.08em] text-[#736e79]"><LockKeyhole className="size-2.5" />Soon</span>}
             </button>
           )
         })}
       </div>
-      <p className="text-xs leading-5 text-[#7d7982]">POV montage is queued for the next release; slideshow is the proven live-render path.</p>
+      <p className="text-xs leading-5 text-[#7d7982]">POV montage renders image-to-video scenes in the background and keeps submitted video work recoverable after a restart.</p>
     </fieldset>
   )
 }

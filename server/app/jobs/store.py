@@ -51,6 +51,10 @@ def init_db() -> None:
                 job_id        TEXT,
                 step_id       TEXT,
                 prediction_id TEXT,
+                checkpoint_json TEXT,
+                status        TEXT NOT NULL DEFAULT 'pending',
+                created_at    DATETIME DEFAULT CURRENT_TIMESTAMP,
+                updated_at    DATETIME DEFAULT CURRENT_TIMESTAMP,
                 PRIMARY KEY (job_id, step_id)
             )
         """)
@@ -93,6 +97,18 @@ def init_db() -> None:
         columns = {row[1] for row in conn.execute("PRAGMA table_info(jobs)")}
         if "beat_count" not in columns:
             conn.execute("ALTER TABLE jobs ADD COLUMN beat_count INTEGER NOT NULL DEFAULT 5")
+
+        checkpoint_columns = {row[1] for row in conn.execute("PRAGMA table_info(checkpoints)")}
+        if "checkpoint_json" not in checkpoint_columns:
+            conn.execute("ALTER TABLE checkpoints ADD COLUMN checkpoint_json TEXT")
+        if "status" not in checkpoint_columns:
+            conn.execute(
+                "ALTER TABLE checkpoints ADD COLUMN status TEXT NOT NULL DEFAULT 'pending'"
+            )
+        if "created_at" not in checkpoint_columns:
+            conn.execute("ALTER TABLE checkpoints ADD COLUMN created_at DATETIME")
+        if "updated_at" not in checkpoint_columns:
+            conn.execute("ALTER TABLE checkpoints ADD COLUMN updated_at DATETIME")
 
 
 def create_job(job_id: str, topic: str, mode: str, beat_count: int) -> None:
@@ -265,9 +281,83 @@ def lineage_for_run(run_id: str) -> list[dict[str, Any]]:
     return lineage
 
 
-def save_checkpoint(job_id: str, step_id: str, prediction_id: Any) -> None:
+def save_checkpoint(
+    job_id: str,
+    step_id: str,
+    prediction_id: Any,
+    checkpoint: dict[str, Any] | None = None,
+) -> None:
+    """Persist an upstream prediction id immediately after provider submission.
+
+    ``checkpoint`` contains the minimum public step inputs needed to resume
+    polling after a process restart. It intentionally never stores credentials.
+    """
+    checkpoint_json = json.dumps(checkpoint, separators=(",", ":")) if checkpoint else None
     with _lock, _conn() as conn:
         conn.execute(
-            "INSERT OR REPLACE INTO checkpoints (job_id, step_id, prediction_id) VALUES (?,?,?)",
-            (job_id, step_id, str(prediction_id)),
+            """
+            INSERT INTO checkpoints (job_id, step_id, prediction_id, checkpoint_json, status)
+            VALUES (?,?,?,?, 'pending')
+            ON CONFLICT(job_id, step_id) DO UPDATE SET
+                prediction_id=excluded.prediction_id,
+                checkpoint_json=excluded.checkpoint_json,
+                status='pending',
+                updated_at=CURRENT_TIMESTAMP
+            """,
+            (job_id, step_id, str(prediction_id), checkpoint_json),
         )
+
+
+def complete_checkpoint(job_id: str, step_id: str) -> None:
+    """Mark a checkpoint terminal after the provider has returned an asset."""
+    with _lock, _conn() as conn:
+        conn.execute(
+            """
+            UPDATE checkpoints SET status='completed', updated_at=CURRENT_TIMESTAMP
+            WHERE job_id=? AND step_id=?
+            """,
+            (job_id, step_id),
+        )
+
+
+def pending_checkpoints(job_id: str) -> list[dict[str, Any]]:
+    """Return resumable checkpoints in submission order, ignoring malformed records."""
+    with _conn() as conn:
+        rows = conn.execute(
+            """
+            SELECT job_id, step_id, prediction_id, checkpoint_json, created_at, updated_at
+            FROM checkpoints
+            WHERE job_id=? AND status='pending' AND checkpoint_json IS NOT NULL
+            ORDER BY created_at, step_id
+            """,
+            (job_id,),
+        ).fetchall()
+
+    checkpoints: list[dict[str, Any]] = []
+    for row in rows:
+        try:
+            payload = json.loads(row["checkpoint_json"])
+        except (TypeError, json.JSONDecodeError):
+            continue
+        if not isinstance(payload, dict):
+            continue
+        checkpoints.append({**dict(row), "checkpoint": payload})
+    return checkpoints
+
+
+def resumable_pov_jobs() -> list[dict[str, Any]]:
+    """Return interrupted POV jobs that have at least one durable prediction."""
+    with _conn() as conn:
+        rows = conn.execute(
+            """
+            SELECT DISTINCT jobs.*
+            FROM jobs
+            JOIN checkpoints ON checkpoints.job_id = jobs.job_id
+            WHERE jobs.status='running'
+              AND jobs.mode='pov'
+              AND checkpoints.status='pending'
+              AND checkpoints.checkpoint_json IS NOT NULL
+            ORDER BY jobs.created_at, jobs.job_id
+            """
+        ).fetchall()
+    return [dict(row) for row in rows]

@@ -141,7 +141,7 @@ export function CampaignWorkspace({ onOpenVerifier }: CampaignWorkspaceProps) {
             ) : (
               <div className="flex min-h-[25rem] flex-col justify-between overflow-hidden rounded-xl border border-[#e2dfd8] bg-[#f8f7f4] p-5 sm:p-7">
                 <div className="flex items-center justify-between gap-3">
-                  <Badge variant="outline" className="border-[#dedbd4] bg-white text-[#625f68]">9:16 slideshow</Badge>
+                  <Badge variant="outline" className="border-[#dedbd4] bg-white text-[#625f68]">9:16 {mode === "pov" ? "POV montage" : "slideshow"}</Badge>
                   <Play className="size-4 text-[#938f98]" />
                 </div>
                 <div className="max-w-sm">

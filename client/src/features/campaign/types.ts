@@ -25,6 +25,7 @@ export type Campaign = {
   beats: Array<{
     index: number
     image_url: string
+    video_url?: string | null
     captioned_url?: string | null
     judge_score?: number | null
     judge_iterations: number

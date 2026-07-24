@@ -50,6 +50,12 @@ class Settings(BaseSettings):
     slideshow_height: int = 1920
     slideshow_fps: int = 25
     slideshow_transition_sec: float = 0.35
+    pov_video_model: str = "pixverse-v5.6-i2v"
+    pov_video_fallback_models: str = "seedance-1-0-pro-fast,wan2.6-i2v"
+    pov_video_unit_cost_usd: float = 0.03
+    pov_clip_duration_sec: int = 5
+    pov_max_concurrency: int = 2
+    pov_pipeline_timeout_sec: int = 900
 
     # API and operational limits
     cors_origins: str = "http://localhost:5173,http://localhost:4173"
@@ -83,6 +89,17 @@ class Settings(BaseSettings):
         return list(
             dict.fromkeys(
                 origin.strip() for origin in self.cors_origins.split(",") if origin.strip()
+            )
+        )
+
+    @property
+    def pov_video_fallback_model_list(self) -> list[str]:
+        """Return de-duplicated, configured fallbacks for image-to-video renders."""
+        return list(
+            dict.fromkeys(
+                model.strip()
+                for model in self.pov_video_fallback_models.split(",")
+                if model.strip() and model.strip() != self.pov_video_model
             )
         )
 

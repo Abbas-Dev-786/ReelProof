@@ -103,18 +103,33 @@ class LocalRenderGuardTests(unittest.TestCase):
         self.assertIn("xfade=transition=fade", graph)
         self.assertAlmostEqual(duration, 9.8)
 
-    def test_pov_requests_fail_clearly_until_phase_six(self) -> None:
-        events: list[tuple[str, dict]] = []
-        result = run_campaign(
-            job_id="phase2-test",
-            topic="A quiet coffee ritual",
-            mode=RenderMode.pov,
-            beat_count=3,
-            emit=lambda event_type, data: events.append((event_type, data)),
+    def test_pov_requests_dispatch_to_the_phase_six_engine(self) -> None:
+        plan = BeatPlan(
+            hook="A quiet coffee ritual",
+            beats=[
+                {"index": 0, "concept": "coffee", "caption": "Brew better"},
+                {"index": 1, "concept": "pour over", "caption": "Slow down"},
+                {"index": 2, "concept": "morning desk", "caption": "Start here"},
+            ],
+            suggested_caption="Make room for ritual.",
+            hashtags=["coffee"],
         )
-        self.assertEqual(result.status, JobStatus.failed)
-        self.assertIn("Phase 6", result.error or "")
-        self.assertEqual(events[0][0], "engine.started")
+        expected = SimpleNamespace(status=JobStatus.done)
+        with (
+            patch("app.engine.run_engine.build_sink", return_value=SimpleNamespace()),
+            patch("app.engine.run_engine.plan_beats", return_value=plan),
+            patch("app.engine.run_engine._run_pov_campaign", return_value=expected) as pov_engine,
+        ):
+            result = run_campaign(
+                job_id="phase6-test",
+                topic="A quiet coffee ritual",
+                mode=RenderMode.pov,
+                beat_count=3,
+                emit=lambda *_: None,
+            )
+
+        self.assertIs(result, expected)
+        pov_engine.assert_called_once()
 
 
 if __name__ == "__main__":

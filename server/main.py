@@ -1,18 +1,41 @@
 from __future__ import annotations
 
+import asyncio
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from genblaze_core import Asset
 
 from app.api.routes import router
 from app.config import settings
-from app.jobs.store import init_db
+from app.jobs.store import init_db, list_product_assets, resumable_pov_jobs
+from app.jobs.worker import launch_worker
+from app.schemas import RenderMode
 
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     init_db()
+    loop = asyncio.get_running_loop()
+    for job in resumable_pov_jobs():
+        assets = [
+            Asset(
+                asset_id=row["asset_id"],
+                url=row["asset_url"],
+                media_type=row["media_type"],
+                sha256=row["sha256"],
+            )
+            for row in list_product_assets(job["job_id"])
+        ]
+        launch_worker(
+            job["job_id"],
+            job["topic"],
+            RenderMode.pov,
+            job["beat_count"],
+            loop,
+            product_assets=assets,
+        )
     yield
 
 

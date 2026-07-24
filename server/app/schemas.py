@@ -78,6 +78,7 @@ class ProductAssetResponse(BaseModel):
 class BeatResult(BaseModel):
     index: int
     image_url: str
+    video_url: str | None = None
     captioned_url: str | None = None
     judge_score: float | None = None
     judge_iterations: int = 1
