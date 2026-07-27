@@ -37,6 +37,7 @@ class GroqChatTests(unittest.TestCase):
                 response_format=BeatPlan,
                 api_key="test-groq-key",
                 max_tokens=2048,
+                reasoning_effort="low",
                 max_attempts=1,
             )
 
@@ -47,6 +48,7 @@ class GroqChatTests(unittest.TestCase):
         self.assertEqual(set(beat_schema["required"]), {"index", "concept", "caption", "vo"})
         self.assertFalse(beat_schema["additionalProperties"])
         self.assertEqual(payload["max_completion_tokens"], 2048)
+        self.assertEqual(payload["reasoning_effort"], "low")
         self.assertEqual(response.raw["_reelproof_provider"], "groq")
         self.assertEqual(response.raw["_reelproof_attempts"], 1)
         openai.assert_called_once()
@@ -157,12 +159,14 @@ class GroqProviderDispatchTests(unittest.TestCase):
                 "llm_provider",
                 "groq_api_key",
                 "groq_planner_model",
+                "groq_planner_max_tokens",
                 "groq_vision_model",
                 "langsmith_tracing",
             )
         }
         settings.llm_provider = "groq"
         settings.groq_api_key = "test-groq-key"
+        settings.groq_planner_max_tokens = 2048
         settings.langsmith_tracing = False
 
     def tearDown(self) -> None:
@@ -188,6 +192,8 @@ class GroqProviderDispatchTests(unittest.TestCase):
         self.assertIs(groq_chat.call_args.kwargs["response_format"], BeatPlan)
         self.assertTrue(groq_chat.call_args.kwargs["strict_json_schema"])
         self.assertEqual(groq_chat.call_args.kwargs["api_key"], "test-groq-key")
+        self.assertEqual(groq_chat.call_args.kwargs["reasoning_effort"], "low")
+        self.assertEqual(groq_chat.call_args.kwargs["max_tokens"], 4096)
 
     def test_judge_uses_groq_vision_model_with_json_object_mode(self) -> None:
         response = SimpleNamespace(

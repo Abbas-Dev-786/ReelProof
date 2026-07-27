@@ -40,6 +40,7 @@ Rules:
 """
 
 _DEFAULT_NVIDIA_CHAT_BASE_URL = "https://integrate.api.nvidia.com/v1"
+_MIN_GROQ_PLANNER_COMPLETION_TOKENS = 4096
 _RETRYABLE_NVIDIA_ERRORS = frozenset(
     {
         ProviderErrorCode.TIMEOUT,
@@ -108,7 +109,11 @@ def _planner_chat(prompt: str):
         system=_SYSTEM,
         prompt=prompt,
         temperature=0.8,
-        max_tokens=settings.groq_planner_max_tokens,
+        # GPT-OSS's completion budget includes reasoning tokens. The default
+        # medium effort can exhaust a 2,048-token cap before strict JSON is
+        # emitted, so use the lightweight mode with a safe minimum budget.
+        max_tokens=max(settings.groq_planner_max_tokens, _MIN_GROQ_PLANNER_COMPLETION_TOKENS),
+        reasoning_effort="low",
         response_format=BeatPlan,
         strict_json_schema=True,
         api_key=settings.groq_api_key,

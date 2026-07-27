@@ -178,6 +178,7 @@ def chat(
     system: str | None = None,
     temperature: float | None = None,
     max_tokens: int | None = None,
+    reasoning_effort: str | None = None,
     response_format: dict[str, Any] | type | None = None,
     strict_json_schema: bool = True,
     api_key: str,
@@ -201,6 +202,8 @@ def chat(
         # Groq's current Chat Completions examples use this OpenAI parameter
         # for both GPT-OSS and the Qwen vision model.
         payload["max_completion_tokens"] = max_tokens
+    if reasoning_effort is not None:
+        payload["reasoning_effort"] = reasoning_effort
     if wire_format := _response_format(response_format, strict=strict_json_schema):
         payload["response_format"] = wire_format
 
