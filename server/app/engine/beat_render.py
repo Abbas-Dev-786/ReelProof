@@ -66,8 +66,6 @@ def render_beat_image(
     if not settings.gmi_api_key:
         raise RuntimeError("GMI_API_KEY is required to render slideshow beats")
 
-    settings.output_path.mkdir(parents=True, exist_ok=True)
-
     prompt = beat.concept
     product_input = list(product_assets or [])[:1]
     if product_input:

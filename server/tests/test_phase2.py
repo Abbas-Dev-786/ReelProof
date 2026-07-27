@@ -208,6 +208,9 @@ class LocalRenderGuardTests(unittest.TestCase):
 
         self.assertIs(result, expected)
         pov_engine.assert_called_once()
+        work_dir = pov_engine.call_args.kwargs["work_dir"]
+        self.assertTrue(work_dir.is_relative_to(Path(tempfile.gettempdir()).resolve()))
+        self.assertFalse(work_dir.exists())
 
 
 if __name__ == "__main__":

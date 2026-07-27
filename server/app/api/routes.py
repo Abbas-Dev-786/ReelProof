@@ -41,6 +41,7 @@ from ..schemas import (
     VerifyResponse,
 )
 from ..storage import verify_manifest_json
+from ..workspace import media_workspace
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -50,6 +51,101 @@ _SUPPORTED_IMAGE_TYPES = {
     "PNG": ("image/png", ".png"),
     "WEBP": ("image/webp", ".webp"),
 }
+
+
+async def _stage_and_ingest_product_upload(
+    *, job_id: str, file: UploadFile, filename: str
+) -> ProductAssetResponse:
+    """Validate, persist, and remove one upload within a secure temp workspace."""
+    asset_id = str(uuid.uuid4())
+    with media_workspace() as upload_dir:
+        staged_path = upload_dir / f"{asset_id}.upload"
+        total_bytes = 0
+        with staged_path.open("wb") as staged:
+            while chunk := await file.read(1024 * 1024):
+                total_bytes += len(chunk)
+                if total_bytes > settings.max_upload_bytes:
+                    raise HTTPException(
+                        status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                        detail=(
+                            "Upload exceeds the "
+                            f"{settings.max_upload_bytes // (1024 * 1024)} MB limit"
+                        ),
+                    )
+                staged.write(chunk)
+        if total_bytes == 0:
+            raise HTTPException(status_code=422, detail="Uploaded image is empty")
+
+        try:
+            with Image.open(staged_path) as image:
+                image.verify()
+            with Image.open(staged_path) as image:
+                width, height = image.size
+                if width * height > settings.max_upload_pixels:
+                    raise HTTPException(
+                        status_code=422, detail="Image dimensions exceed the allowed limit"
+                    )
+                detected = _SUPPORTED_IMAGE_TYPES.get(image.format or "")
+        except (UnidentifiedImageError, OSError) as exc:
+            raise HTTPException(
+                status_code=422, detail="Uploaded file is not a valid image"
+            ) from exc
+
+        if detected is None:
+            raise HTTPException(
+                status_code=415, detail="Only JPEG, PNG, and WebP uploads are supported"
+            )
+
+        media_type, suffix = detected
+        normalized_filename = f"{Path(filename).stem[:200]}{suffix}"
+        normalized_path = staged_path.with_suffix(suffix)
+        staged_path.replace(normalized_path)
+
+        try:
+            ingested = await asyncio.to_thread(
+                ingest_product_image,
+                local_path=normalized_path,
+                filename=normalized_filename,
+                media_type=media_type,
+                job_id=job_id,
+            )
+        except ContentSafetyError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        except Exception as exc:
+            logger.exception("Product image ingestion failed", extra={"job_id": job_id})
+            raise HTTPException(
+                status_code=502, detail="Product image could not be stored"
+            ) from exc
+
+        record_provenance(
+            job_id=job_id,
+            run_id=str(ingested["run_id"]),
+            manifest_json=str(ingested["manifest_json"]),
+            manifest_hash=str(ingested["manifest_hash"]),
+            manifest_uri=ingested["manifest_uri"],
+            parent_run_id=ingested["parent_run_id"],
+        )
+        record_product_asset(
+            asset_id=str(ingested["asset_id"]),
+            job_id=job_id,
+            filename=normalized_filename,
+            media_type=media_type,
+            asset_url=str(ingested["asset_url"]),
+            sha256=ingested["sha256"],
+            run_id=str(ingested["run_id"]),
+            manifest_hash=str(ingested["manifest_hash"]),
+            manifest_uri=ingested["manifest_uri"],
+        )
+        return ProductAssetResponse(
+            asset_id=str(ingested["asset_id"]),
+            filename=normalized_filename,
+            media_type=media_type,
+            asset_url=str(ingested["asset_url"]),
+            sha256=ingested["sha256"],
+            run_id=str(ingested["run_id"]),
+            manifest_hash=str(ingested["manifest_hash"]),
+            manifest_uri=ingested["manifest_uri"],
+        )
 
 
 @router.post("/campaigns", response_model=CreateCampaignResponse)
@@ -119,98 +215,14 @@ async def upload_product_asset(
         )
 
     filename = Path(file.filename or "product-image").name[:255]
-    asset_id = str(uuid.uuid4())
-    upload_dir = settings.output_path / "uploads" / job_id
-    upload_dir.mkdir(parents=True, exist_ok=True)
-    staged_path = upload_dir / f"{asset_id}.upload"
-
     try:
-        total_bytes = 0
-        with staged_path.open("wb") as staged:
-            while chunk := await file.read(1024 * 1024):
-                total_bytes += len(chunk)
-                if total_bytes > settings.max_upload_bytes:
-                    raise HTTPException(
-                        status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
-                        detail=f"Upload exceeds the {settings.max_upload_bytes // (1024 * 1024)} MB limit",
-                    )
-                staged.write(chunk)
-        if total_bytes == 0:
-            raise HTTPException(status_code=422, detail="Uploaded image is empty")
-
-        try:
-            with Image.open(staged_path) as image:
-                image.verify()
-            with Image.open(staged_path) as image:
-                width, height = image.size
-                if width * height > settings.max_upload_pixels:
-                    raise HTTPException(
-                        status_code=422, detail="Image dimensions exceed the allowed limit"
-                    )
-                detected = _SUPPORTED_IMAGE_TYPES.get(image.format or "")
-        except (UnidentifiedImageError, OSError) as exc:
-            raise HTTPException(
-                status_code=422, detail="Uploaded file is not a valid image"
-            ) from exc
-
-        if detected is None:
-            raise HTTPException(
-                status_code=415, detail="Only JPEG, PNG, and WebP uploads are supported"
-            )
-
-        media_type, suffix = detected
-        normalized_filename = f"{Path(filename).stem[:200]}{suffix}"
-        normalized_path = staged_path.with_suffix(suffix)
-        staged_path.replace(normalized_path)
-        staged_path = normalized_path
-
-        try:
-            ingested = await asyncio.to_thread(
-                ingest_product_image,
-                local_path=staged_path,
-                filename=normalized_filename,
-                media_type=media_type,
-                job_id=job_id,
-            )
-        except ContentSafetyError as exc:
-            raise HTTPException(status_code=422, detail=str(exc)) from exc
-        except Exception as exc:
-            logger.exception("Product image ingestion failed", extra={"job_id": job_id})
-            raise HTTPException(
-                status_code=502, detail="Product image could not be stored"
-            ) from exc
-        record_provenance(
+        return await _stage_and_ingest_product_upload(
             job_id=job_id,
-            run_id=str(ingested["run_id"]),
-            manifest_json=str(ingested["manifest_json"]),
-            manifest_hash=str(ingested["manifest_hash"]),
-            manifest_uri=ingested["manifest_uri"],
-            parent_run_id=ingested["parent_run_id"],
-        )
-        record_product_asset(
-            asset_id=str(ingested["asset_id"]),
-            job_id=job_id,
-            filename=normalized_filename,
-            media_type=media_type,
-            asset_url=str(ingested["asset_url"]),
-            sha256=ingested["sha256"],
-            run_id=str(ingested["run_id"]),
-            manifest_hash=str(ingested["manifest_hash"]),
-            manifest_uri=ingested["manifest_uri"],
-        )
-        return ProductAssetResponse(
-            asset_id=str(ingested["asset_id"]),
-            filename=normalized_filename,
-            media_type=media_type,
-            asset_url=str(ingested["asset_url"]),
-            sha256=ingested["sha256"],
-            run_id=str(ingested["run_id"]),
-            manifest_hash=str(ingested["manifest_hash"]),
-            manifest_uri=ingested["manifest_uri"],
+            file=file,
+            filename=filename,
         )
     finally:
         await file.close()
-        staged_path.unlink(missing_ok=True)
 
 
 @router.get("/campaigns/{job_id}/stream")

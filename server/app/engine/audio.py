@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 from genblaze_core import Modality, ObjectStorageSink, Pipeline
@@ -10,6 +11,7 @@ from genblaze_stability_audio import StabilityAudioProvider
 
 from ..config import settings
 from ..observability import langsmith_tracer
+from ..workspace import require_media_workspace
 from .safety import audio_retry_policy, moderation_hook
 
 
@@ -54,8 +56,6 @@ def generate_music_asset(
     if duration_sec <= 0:
         raise ValueError("duration_sec must be greater than zero")
 
-    settings.output_path.mkdir(parents=True, exist_ok=True)
-
     provider = StabilityAudioProvider(
         api_key=settings.stability_api_key or None, retry_policy=audio_retry_policy()
     )
@@ -85,6 +85,7 @@ def generate_voiceover_asset(
     *,
     sink: ObjectStorageSink | None = None,
     job_id: str | None = None,
+    output_dir: str | Path,
 ) -> GeneratedAudio | None:
     """Generate one campaign narration track when voiceover is enabled.
 
@@ -99,10 +100,10 @@ def generate_voiceover_asset(
     if not settings.elevenlabs_api_key:
         raise RuntimeError("ELEVENLABS_API_KEY is required when VOICEOVER_ENABLED=true")
 
-    settings.output_path.mkdir(parents=True, exist_ok=True)
+    target_dir = require_media_workspace(output_dir)
     provider = ElevenLabsTTSProvider(
         api_key=settings.elevenlabs_api_key,
-        output_dir=settings.output_path,
+        output_dir=target_dir,
         retry_policy=audio_retry_policy(),
     )
     result = (

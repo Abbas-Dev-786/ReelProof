@@ -12,6 +12,7 @@ from ..jobs.store import complete_checkpoint, pending_checkpoints, save_checkpoi
 from ..observability import finish_trace, ingest_with_trace, trace_operation
 from ..schemas import BeatPlan, BeatResult, CampaignResult, JobStatus, RenderMode
 from ..storage import build_sink, readable_asset_url
+from ..workspace import media_workspace, require_media_workspace
 from .assemble import assemble_pov_montage, assemble_slideshow
 from .audio import GeneratedAudio, generate_music_asset, generate_voiceover_asset
 from .beat_render import POVBeatRender, resume_pov_video, run_pov_beat_loop
@@ -273,6 +274,7 @@ def _run_pov_campaign(
         [beat.vo for beat in beat_plan.beats if beat.vo],
         sink=build_sink(),
         job_id=job_id,
+        output_dir=work_dir,
     )
     _record_generated_audio(voiceover, record_provenance)
     emit("step.completed", {"step": "voiceover", "enabled": voiceover is not None})
@@ -332,15 +334,17 @@ def run_campaign(
         inputs={"job_id": job_id, "topic": topic, "mode": mode.value, "beat_count": beat_count},
         metadata={"has_product_assets": bool(product_assets)},
     ) as trace:
-        result = _run_campaign(
-            job_id,
-            topic,
-            mode,
-            beat_count,
-            emit,
-            product_assets=product_assets,
-            record_provenance=record_provenance,
-        )
+        with media_workspace() as work_dir:
+            result = _run_campaign(
+                job_id,
+                topic,
+                mode,
+                beat_count,
+                emit,
+                product_assets=product_assets,
+                record_provenance=record_provenance,
+                work_dir=work_dir,
+            )
         finish_trace(
             trace,
             {
@@ -362,6 +366,8 @@ def _run_campaign(
     emit: Callable[[str, dict[str, Any]], None],  # emit(event_type, data)
     product_assets: Sequence[Asset] | None = None,
     record_provenance: Callable[[dict[str, Any]], None] | None = None,
+    *,
+    work_dir: Path,
 ) -> CampaignResult:
     """
     Full synchronous engine. Called from a background thread.
@@ -370,17 +376,13 @@ def _run_campaign(
     emit("engine.started", {"job_id": job_id, "topic": topic, "mode": mode.value})
 
     try:
+        work_dir = require_media_workspace(work_dir)
         if missing := settings.missing_campaign_settings():
             raise RuntimeError(
                 "Campaign configuration is incomplete; set " + ", ".join(missing)
             )
         if renderer_error := caption_renderer_error():
             raise RuntimeError(f"Campaign configuration is incomplete; {renderer_error}")
-
-        # A unique work directory prevents simultaneous jobs from overwriting
-        # each other's captioned frames and assembled reel.
-        work_dir = settings.output_path / job_id
-        work_dir.mkdir(parents=True, exist_ok=True)
 
         # Fail before paid provider calls if B2 is unavailable.
         sink = build_sink()
@@ -487,6 +489,7 @@ def _run_campaign(
             [beat.vo for beat in beat_plan.beats if beat.vo],
             sink=build_sink(),
             job_id=job_id,
+            output_dir=work_dir,
         )
         _record_generated_audio(voiceover, record_provenance)
         emit("step.completed", {"step": "voiceover", "enabled": voiceover is not None})

@@ -65,13 +65,24 @@ class Phase3ApiTests(unittest.TestCase):
             "manifest_json": '{"schema_version":"1.0","run":null,"canonical_hash":"x"}',
             "parent_run_id": None,
         }
-        with patch("app.api.routes.ingest_product_image", return_value=ingested):
+        staged_paths: list[Path] = []
+
+        def capture_ingest(**kwargs):
+            staged_path = kwargs["local_path"]
+            self.assertTrue(staged_path.is_file())
+            staged_paths.append(staged_path)
+            return ingested
+
+        with patch("app.api.routes.ingest_product_image", side_effect=capture_ingest):
             response = self.client.post(
                 f"/campaigns/{job_id}/assets",
                 files={"file": ("product.png", ONE_PIXEL_PNG, "image/png")},
             )
 
         self.assertEqual(response.status_code, 201)
+        self.assertEqual(len(staged_paths), 1)
+        self.assertTrue(staged_paths[0].is_relative_to(Path(tempfile.gettempdir()).resolve()))
+        self.assertFalse(staged_paths[0].exists())
         self.assertEqual(response.json()["run_id"], "run-1")
         self.assertEqual(len(store.list_product_assets(job_id)), 1)
         self.assertEqual(store.get_provenance("run-1")["manifest_hash"], "b" * 64)
