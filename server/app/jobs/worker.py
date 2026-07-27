@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import os
+import platform
 import threading
 import uuid
 from typing import Any
@@ -14,7 +15,7 @@ from ..schemas import RenderMode
 from .store import append_event, record_provenance, renew_job_lease, set_failed, set_result
 
 logger = logging.getLogger(__name__)
-WORKER_ID = f"{os.uname().nodename}:{os.getpid()}:{uuid.uuid4()}"
+WORKER_ID = f"{platform.node()}:{os.getpid()}:{uuid.uuid4()}"
 
 
 class WorkerLeaseLost(RuntimeError):
