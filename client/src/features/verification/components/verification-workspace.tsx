@@ -85,7 +85,7 @@ export function VerificationWorkspace({ initialRunId, onBackToStudio }: Verifica
 
             <section className="mt-6">
               <div className="mb-4 flex items-center justify-between gap-3"><div><h2 className="text-base font-semibold text-[#37333d]">Generation lineage</h2><p className="mt-1 text-xs leading-5 text-[#817b87]">Every refinement remains linked to the final verified run.</p></div><Badge variant="outline" className="border-[#e0dbe9] bg-[#faf9fd] text-[#625b74]">{result.lineage.length} attempts</Badge></div>
-              <LineageTimeline lineage={result.lineage} />
+              <LineageTimeline lineage={result.lineage} verifiedRunId={result.verified ? result.run_id : undefined} />
             </section>
           </CardContent>}
         </Card>

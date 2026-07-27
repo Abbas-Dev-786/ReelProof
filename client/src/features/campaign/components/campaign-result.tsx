@@ -4,18 +4,37 @@ import { Button } from "@/components/ui/button"
 import { Card, CardContent } from "@/components/ui/card"
 import { CampaignDeliverables } from "./campaign-deliverables"
 import { CampaignPreview } from "./campaign-preview"
+import { CampaignRecord } from "./campaign-record"
 import { LineageTimeline } from "./lineage-timeline"
-import type { Campaign, VerifyResult } from "../types"
+import type { Campaign, CampaignLineage, CampaignPackage, VerifyResult } from "../types"
 
 type CampaignResultProps = {
   campaign: Campaign
   verification: VerifyResult | undefined
   isVerifying: boolean
+  campaignPackage: CampaignPackage | undefined
+  campaignPackageError: Error | null
+  isCampaignPackageLoading: boolean
+  campaignLineage: CampaignLineage | undefined
+  campaignLineageError: Error | null
+  isCampaignLineageLoading: boolean
   onVerify: () => void
   onOpenVerifier: (runId: string) => void
 }
 
-export function CampaignResult({ campaign, verification, isVerifying, onVerify, onOpenVerifier }: CampaignResultProps) {
+export function CampaignResult({
+  campaign,
+  verification,
+  isVerifying,
+  campaignPackage,
+  campaignPackageError,
+  isCampaignPackageLoading,
+  campaignLineage,
+  campaignLineageError,
+  isCampaignLineageLoading,
+  onVerify,
+  onOpenVerifier,
+}: CampaignResultProps) {
   return (
     <Card className="overflow-hidden border border-[#e2dfd8] bg-white shadow-none">
       <CampaignPreview campaign={campaign} />
@@ -32,9 +51,10 @@ export function CampaignResult({ campaign, verification, isVerifying, onVerify, 
         {verification && <div className={`rounded-lg border p-3 ${verification.verified ? "border-[#bfe7cf] bg-[#f0fbf4]" : "border-[#f3d1c8] bg-[#fff4f1]"}`}>
           <div className="flex items-center gap-2 text-sm font-medium"><ShieldCheck className={`size-4 ${verification.verified ? "text-[#2d8b5d]" : "text-[#bd5c51]"}`} />{verification.verified ? "Manifest verified" : "Verification needs review"}</div>
           <p className="mt-1 break-all text-[11px] leading-4 text-[#777482]">{verification.manifest_hash ?? campaign.manifest_hash}</p>
-          {verification.lineage.length > 0 && <div className="mt-4 border-t border-[#cfe7d8] pt-3"><LineageTimeline compact lineage={verification.lineage} /></div>}
+          {verification.lineage.length > 0 && <div className="mt-4 border-t border-[#cfe7d8] pt-3"><LineageTimeline compact lineage={verification.lineage} verifiedRunId={verification.verified ? verification.run_id : undefined} /></div>}
         </div>}
         <CampaignDeliverables campaign={campaign} />
+        <CampaignRecord campaign={campaign} campaignLineage={campaignLineage} campaignLineageError={campaignLineageError} campaignPackage={campaignPackage} campaignPackageError={campaignPackageError} isCampaignLineageLoading={isCampaignLineageLoading} isCampaignPackageLoading={isCampaignPackageLoading} verifiedRunId={verification?.verified ? verification.run_id : undefined} />
       </CardContent>
     </Card>
   )

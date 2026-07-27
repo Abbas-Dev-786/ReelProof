@@ -2,6 +2,15 @@ export type RenderMode = "slideshow" | "pov"
 
 export type CampaignStatus = "pending" | "running" | "done" | "failed"
 
+export type HealthResponse = {
+  status: string
+}
+
+export type CampaignStartResponse = {
+  job_id: string
+  status: CampaignStatus
+}
+
 export type BeatState = "waiting" | "working" | "passed" | "retrying"
 
 export type Beat = {
@@ -59,6 +68,18 @@ export type ProductAsset = {
   run_id: string
   manifest_hash: string
   manifest_uri?: string | null
+}
+
+export type CampaignPackage = {
+  job_id: string
+  campaign: Campaign
+  product_assets: ProductAsset[]
+  provenance: LineageEntry[]
+}
+
+export type CampaignLineage = {
+  job_id: string
+  runs: LineageEntry[]
 }
 
 export type VerifyResult = {

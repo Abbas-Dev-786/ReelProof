@@ -5,6 +5,7 @@ import { CampaignComposer } from "./campaign-composer"
 import { CampaignResult } from "./campaign-result"
 import { GenerationTray } from "./generation-tray"
 import { useCampaignGeneration } from "../hooks/use-campaign-generation"
+import { useCampaignLineage, useCampaignPackage } from "../hooks/use-campaign-records"
 import { useCampaign, useCampaignStream } from "../hooks/use-campaign-stream"
 import { useRunVerification } from "../hooks/use-run-verification"
 import type { BeatProgress, GenerationStage, RenderMode } from "../types"
@@ -26,6 +27,8 @@ export function CampaignWorkspace({ onOpenVerifier }: CampaignWorkspaceProps) {
 
   const generation = useCampaignGeneration()
   const campaignQuery = useCampaign(jobId)
+  const campaignPackageQuery = useCampaignPackage(jobId, campaignQuery.data?.status)
+  const campaignLineageQuery = useCampaignLineage(jobId, campaignQuery.data?.status)
   const verification = useRunVerification()
 
   const updateBeat = useCallback((index: number, update: Partial<BeatProgress>) => {
@@ -137,7 +140,7 @@ export function CampaignWorkspace({ onOpenVerifier }: CampaignWorkspaceProps) {
         <div className="grid gap-6 xl:grid-cols-[minmax(0,1.15fr)_minmax(19rem,0.85fr)]">
           <div className="min-w-0">
             {campaignQuery.data && stage === "complete" ? (
-              <CampaignResult campaign={campaignQuery.data} verification={verification.data} isVerifying={verification.isPending} onVerify={() => void handleVerification()} onOpenVerifier={onOpenVerifier} />
+              <CampaignResult campaign={campaignQuery.data} campaignLineage={campaignLineageQuery.data} campaignLineageError={campaignLineageQuery.error} campaignPackage={campaignPackageQuery.data} campaignPackageError={campaignPackageQuery.error} isCampaignLineageLoading={campaignLineageQuery.isLoading} isCampaignPackageLoading={campaignPackageQuery.isLoading} verification={verification.data} isVerifying={verification.isPending} onVerify={() => void handleVerification()} onOpenVerifier={onOpenVerifier} />
             ) : (
               <div className="flex min-h-[25rem] flex-col justify-between overflow-hidden rounded-xl border border-[#e2dfd8] bg-[#f8f7f4] p-5 sm:p-7">
                 <div className="flex items-center justify-between gap-3">

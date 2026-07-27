@@ -63,11 +63,21 @@ and prints durable reel and manifest URLs for the demo runbook.
 
 Before running it, ensure `ffmpeg` and `ffprobe` are on `PATH`, configure the
 selected LLM provider, GMI, Stability, and B2 credentials, and start the API
-in another shell.
+in another shell **without** `--reload`. Reload mode is for development only:
+when source files change it terminates the server process and its in-process
+campaign worker, which interrupts a showcase run.
 This makes paid provider requests.
 
 ```bash
+.venv/bin/python -m uvicorn main:app --host 127.0.0.1 --port 8000
 .venv/bin/python scripts/pregenerate_showcases.py
+```
+
+In an activated Windows virtual environment, use the equivalent commands:
+
+```powershell
+python -m uvicorn main:app --host 127.0.0.1 --port 8000
+python .\scripts\pregenerate_showcases.py
 ```
 
 The API now uses bounded retry policies for images, audio, and video; image and

@@ -89,8 +89,27 @@ def wait_for_campaign(
     client: httpx.Client, job_id: str, *, poll_interval: float, timeout: float
 ) -> dict[str, Any]:
     deadline = time.monotonic() + timeout
+    last_transport_error: httpx.TransportError | None = None
     while time.monotonic() < deadline:
-        response = client.get(f"/campaigns/{job_id}")
+        try:
+            response = client.get(f"/campaigns/{job_id}")
+        except httpx.TransportError as exc:
+            # The campaign has already been created and its status is durable
+            # in SQLite. Retrying this idempotent GET is safe; retrying the
+            # create POST would risk duplicate paid provider work.
+            last_transport_error = exc
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            retry_delay = min(poll_interval, remaining)
+            print(
+                f"Temporary API connection error while polling {job_id}: {exc}. "
+                f"Retrying in {retry_delay:.1f}s...",
+                flush=True,
+            )
+            time.sleep(retry_delay)
+            continue
+
         response.raise_for_status()
         campaign = cast(dict[str, Any], response.json())
         if campaign["status"] == "done":
@@ -98,7 +117,12 @@ def wait_for_campaign(
         if campaign["status"] == "failed":
             raise RuntimeError(campaign.get("error") or f"Campaign {job_id} failed")
         time.sleep(poll_interval)
-    raise TimeoutError(f"Campaign {job_id} did not complete within {timeout:.0f} seconds")
+    message = f"Campaign {job_id} did not complete within {timeout:.0f} seconds"
+    if last_transport_error is not None:
+        raise TimeoutError(
+            f"{message}; last API transport error: {last_transport_error}"
+        ) from last_transport_error
+    raise TimeoutError(message)
 
 
 def main() -> int:
@@ -113,6 +137,7 @@ def main() -> int:
         for showcase in SHOWCASES:
             print(f"Starting {showcase.name} ({showcase.mode})…", flush=True)
             job_id = create_showcase(client, showcase)
+            print(f"Created {showcase.name}: {job_id}", flush=True)
             campaign = wait_for_campaign(
                 client,
                 job_id,
