@@ -72,9 +72,9 @@ def live_smoke() -> bool:
     from genblaze_core import Modality, Pipeline
     from genblaze_core.providers import per_unit
     from genblaze_gmicloud import GMICloudImageProvider
-    from genblaze_stability_audio import StabilityAudioProvider
 
     from app.config import settings
+    from app.engine.stability_audio import StabilityAudioProvider
     from app.storage import build_sink
 
     if missing := settings.missing_phase1_settings():

@@ -7,12 +7,12 @@ from typing import Any
 
 from genblaze_core import Modality, ObjectStorageSink, Pipeline
 from genblaze_elevenlabs import ElevenLabsTTSProvider
-from genblaze_stability_audio import StabilityAudioProvider
 
 from ..config import settings
 from ..observability import langsmith_tracer
 from ..workspace import require_media_workspace
 from .safety import audio_retry_policy, moderation_hook
+from .stability_audio import StabilityAudioProvider
 
 
 @dataclass(frozen=True)
