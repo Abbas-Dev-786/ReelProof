@@ -9,6 +9,7 @@ from genblaze_nvidia import chat
 from openai import OpenAI
 
 from ..config import settings
+from ..observability import finish_trace, trace_operation
 from ..schemas import Beat, BeatPlan
 from .safety import ensure_prompt_allowed
 
@@ -133,6 +134,13 @@ def plan_beats(topic: str, beat_count: int = 5, product_context: str | None = No
     if product_context:
         user_msg += f"\nProduct context: {product_context}"
 
-    resp = _planner_chat(user_msg)
+    with trace_operation(
+        "reelproof.planner",
+        inputs={"topic": topic, "beat_count": beat_count, "has_product_context": bool(product_context)},
+        metadata={"model": settings.nvidia_planner_model},
+        run_type="llm",
+    ) as trace:
+        resp = _planner_chat(user_msg)
+        finish_trace(trace, {"model": settings.nvidia_planner_model, "response_chars": len(resp.text)})
 
     return parse_beat_plan(resp.text, beat_count)

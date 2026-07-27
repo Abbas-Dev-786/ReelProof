@@ -10,6 +10,7 @@ from genblaze_core.providers import per_unit
 from genblaze_gmicloud import GMICloudImageProvider, GMICloudVideoProvider
 
 from ..config import settings
+from ..observability import ingest_with_trace, langsmith_tracer
 from ..schemas import Beat
 from .judge import VisionJudge
 from .safety import ensure_assets_allowed, image_retry_policy, moderation_hook, video_retry_policy
@@ -85,7 +86,9 @@ def render_beat_image(
     )
 
     result = (
-        Pipeline(f"beat-{beat.index}-image", moderation=moderation_hook())
+        Pipeline(
+            f"beat-{beat.index}-image", moderation=moderation_hook(), tracer=langsmith_tracer()
+        )
         .step(
             provider,
             model=settings.gmi_product_image_model if product_input else settings.gmi_image_model,
@@ -178,7 +181,12 @@ async def render_pov_beat(
             )
 
     result = await (
-        Pipeline(f"pov-beat-{job_id}-{beat.index}", chain=True, moderation=moderation_hook())
+        Pipeline(
+            f"pov-beat-{job_id}-{beat.index}",
+            chain=True,
+            moderation=moderation_hook(),
+            tracer=langsmith_tracer(),
+        )
         .step(
             _image_provider(),
             model=settings.gmi_product_image_model if product_input else settings.gmi_image_model,
@@ -311,6 +319,7 @@ async def run_pov_beat_loop(
         build_pipeline,
         VisionJudge(),
         max_iterations=settings.max_agent_iterations,
+        tracer=langsmith_tracer(),
     ).arun(
         sink=sink,
         timeout=settings.pov_pipeline_timeout_sec,
@@ -400,7 +409,7 @@ async def resume_pov_video(
     # aresume returns a provider asset outside the original Pipeline result.
     # Ingest it explicitly so recovery has the same immutable B2 evidence as a
     # normally completed image-to-video run.
-    result = Pipeline.ingest(
+    result = ingest_with_trace(
         assets=[video_asset],
         source="reelproof-pov-resume",
         source_metadata={

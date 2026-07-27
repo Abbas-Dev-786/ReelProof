@@ -9,6 +9,7 @@ from genblaze_core.providers import per_unit
 from genblaze_gmicloud import GMICloudImageProvider
 
 from ..config import settings
+from ..observability import langsmith_tracer
 from ..schemas import Beat
 from .judge import VisionJudge
 from .safety import image_retry_policy, moderation_hook
@@ -93,6 +94,7 @@ def run_beat_loop(
         build_pipeline,
         VisionJudge(),
         max_iterations=settings.max_agent_iterations,
+        tracer=langsmith_tracer(),
     )
 
     agent_result = loop.run(

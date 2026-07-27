@@ -2,8 +2,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from genblaze_core import Asset, Pipeline
+from genblaze_core import Asset
 
+from ..observability import ingest_with_trace
 from ..storage import build_sink
 from .safety import ensure_assets_allowed
 
@@ -22,7 +23,7 @@ def ingest_product_image(
     upload_asset = Asset(url=local_path.resolve().as_uri(), media_type=media_type)
     ensure_assets_allowed([upload_asset])
 
-    result = Pipeline.ingest(
+    result = ingest_with_trace(
         assets=[upload_asset],
         source="reelproof-product-upload",
         source_metadata={"job_id": job_id, "filename": filename},

@@ -5,10 +5,11 @@ from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Any
 
-from genblaze_core import Asset, Pipeline
+from genblaze_core import Asset
 
 from ..config import settings
 from ..jobs.store import complete_checkpoint, pending_checkpoints, save_checkpoint
+from ..observability import finish_trace, ingest_with_trace, trace_operation
 from ..schemas import BeatPlan, BeatResult, CampaignResult, JobStatus, RenderMode
 from ..storage import build_sink
 from .assemble import assemble_pov_montage, assemble_slideshow
@@ -32,7 +33,7 @@ def _store_final_reel(
     """Persist the assembled MP4 and its verified manifest in B2."""
     reel_asset = Asset(url=Path(reel_path).resolve().as_uri(), media_type="video/mp4")
     ensure_assets_allowed([reel_asset])
-    store_result = Pipeline.ingest(
+    store_result = ingest_with_trace(
         assets=[reel_asset],
         source="reelproof-assembly",
         source_metadata={"topic": topic, "mode": mode.value, "job_id": job_id},
@@ -79,7 +80,7 @@ def _store_local_intermediate(
     """
     asset = Asset(url=Path(path).resolve().as_uri(), media_type=media_type)
     ensure_assets_allowed([asset])
-    result = Pipeline.ingest(
+    result = ingest_with_trace(
         assets=[asset],
         source="reelproof-intermediate",
         source_metadata={
@@ -317,6 +318,43 @@ def _run_pov_campaign(
 
 
 def run_campaign(
+    job_id: str,
+    topic: str,
+    mode: RenderMode,
+    beat_count: int,
+    emit: Callable[[str, dict[str, Any]], None],  # emit(event_type, data)
+    product_assets: Sequence[Asset] | None = None,
+    record_provenance: Callable[[dict[str, Any]], None] | None = None,
+) -> CampaignResult:
+    """Trace one campaign root while the engine records durable provenance."""
+    with trace_operation(
+        "reelproof.campaign",
+        inputs={"job_id": job_id, "topic": topic, "mode": mode.value, "beat_count": beat_count},
+        metadata={"has_product_assets": bool(product_assets)},
+    ) as trace:
+        result = _run_campaign(
+            job_id,
+            topic,
+            mode,
+            beat_count,
+            emit,
+            product_assets=product_assets,
+            record_provenance=record_provenance,
+        )
+        finish_trace(
+            trace,
+            {
+                "job_id": job_id,
+                "status": result.status.value,
+                "run_id": getattr(result, "run_id", None),
+                "manifest_hash": getattr(result, "manifest_hash", None),
+                "total_cost_usd": getattr(result, "total_cost_usd", None),
+            },
+        )
+        return result
+
+
+def _run_campaign(
     job_id: str,
     topic: str,
     mode: RenderMode,

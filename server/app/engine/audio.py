@@ -9,6 +9,7 @@ from genblaze_elevenlabs import ElevenLabsTTSProvider
 from genblaze_stability_audio import StabilityAudioProvider
 
 from ..config import settings
+from ..observability import langsmith_tracer
 from .safety import audio_retry_policy, moderation_hook
 
 
@@ -60,7 +61,7 @@ def generate_music_asset(
     )
 
     result = (
-        Pipeline("reel-music", moderation=moderation_hook())
+        Pipeline("reel-music", moderation=moderation_hook(), tracer=langsmith_tracer())
         .step(
             provider,
             model="stable-audio-2.5",
@@ -105,7 +106,7 @@ def generate_voiceover_asset(
         retry_policy=audio_retry_policy(),
     )
     result = (
-        Pipeline("reel-voiceover", moderation=moderation_hook())
+        Pipeline("reel-voiceover", moderation=moderation_hook(), tracer=langsmith_tracer())
         .step(
             provider,
             model=settings.elevenlabs_voice_model,

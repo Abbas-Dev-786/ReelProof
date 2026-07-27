@@ -35,6 +35,13 @@ class Settings(BaseSettings):
     elevenlabs_voice_model: str = "eleven_v3"
     elevenlabs_voice_id: str = "JBFqnCBsd6RMkjVDRZzb"
 
+    # LangSmith is opt-in. Its traces intentionally contain prompts and asset
+    # URLs, so only enable it for workspaces approved for that data.
+    langsmith_tracing: bool = False
+    langsmith_api_key: str = ""
+    langsmith_project: str = "reelproof"
+    langsmith_workspace_id: str = ""
+
     # Backblaze B2
     b2_key_id: str = ""
     b2_app_key: str = ""

@@ -8,6 +8,7 @@ from genblaze_nvidia import chat
 from pydantic import BaseModel, ConfigDict, Field
 
 from ..config import settings
+from ..observability import finish_trace, trace_operation
 
 _JUDGE_SYSTEM = """\
 You are a strict quality judge for short-form social video frames.
@@ -63,23 +64,30 @@ class VisionJudge(Evaluator):
 
         url = image_asset.url
 
-        resp = chat(
-            settings.nvidia_vision_model,
-            messages=[
-                {
-                    "role": "user",
-                    "content": [
-                        {"type": "text", "text": "Score this image:"},
-                        {"type": "image_url", "image_url": {"url": url}},
-                    ],
-                }
-            ],
-            system=_JUDGE_SYSTEM,
-            temperature=0.1,
-            response_format=JudgeScoresResponse,
-            api_key=settings.nvidia_api_key,
-            base_url=settings.nvidia_chat_base_url or None,
-        )
+        with trace_operation(
+            "reelproof.vision-judge",
+            inputs={"image_url": str(url)},
+            metadata={"model": settings.nvidia_vision_model},
+            run_type="llm",
+        ) as trace:
+            resp = chat(
+                settings.nvidia_vision_model,
+                messages=[
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "text", "text": "Score this image:"},
+                            {"type": "image_url", "image_url": {"url": url}},
+                        ],
+                    }
+                ],
+                system=_JUDGE_SYSTEM,
+                temperature=0.1,
+                response_format=JudgeScoresResponse,
+                api_key=settings.nvidia_api_key,
+                base_url=settings.nvidia_chat_base_url or None,
+            )
+            finish_trace(trace, {"model": settings.nvidia_vision_model, "response_chars": len(resp.text)})
 
         try:
             scores = parse_judge_scores(resp.text)

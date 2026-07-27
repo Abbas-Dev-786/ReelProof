@@ -39,6 +39,19 @@ run with an approved test account and B2 bucket. Full campaign creation also
 requires a browser-reachable `B2_PUBLIC_URL_BASE` until presigned asset URLs
 are implemented.
 
+## LangSmith observability
+
+Set `LANGSMITH_TRACING=true`, `LANGSMITH_API_KEY`, and optionally
+`LANGSMITH_PROJECT=reelproof` to trace campaign roots, NVIDIA planner/judge
+calls, and every GenBlaze image, audio, and video pipeline. Traces contain
+prompts and generated asset URLs; use only an approved LangSmith workspace.
+The feature is fail-open: an unavailable LangSmith backend never fails a
+campaign. Query recent runs with:
+
+```bash
+langsmith trace list --project reelproof --limit 10 --show-hierarchy
+```
+
 ## Demo showcases
 
 Phase 7 includes a repeatable runner for the two slideshow and one POV showcase
