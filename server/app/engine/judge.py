@@ -9,6 +9,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from ..config import settings
 from ..observability import finish_trace, trace_operation
+from .groq import chat as groq_chat
 
 _JUDGE_SYSTEM = """\
 You are a strict quality judge for short-form social video frames.
@@ -43,11 +44,13 @@ class JudgeScoresResponse(BaseModel):
 
 
 class VisionJudge(Evaluator):
-    """Vision quality judge backed by Qwen's flagship hosted NVIDIA NIM VLM."""
+    """Vision quality judge backed by the selected multimodal LLM provider."""
 
     def evaluate(self, result) -> EvaluationResult:
-        if not settings.nvidia_api_key:
-            raise RuntimeError("NVIDIA_API_KEY is required for the Phase 4 vision judge")
+        if not settings.active_llm_api_key:
+            raise RuntimeError(
+                f"{settings.active_llm_key_env_name} is required for the Phase 4 vision judge"
+            )
 
         steps = result.run.steps
         image_asset = next(
@@ -67,27 +70,59 @@ class VisionJudge(Evaluator):
         with trace_operation(
             "reelproof.vision-judge",
             inputs={"image_url": str(url)},
-            metadata={"model": settings.nvidia_vision_model},
+            metadata={"provider": settings.llm_provider, "model": settings.active_vision_model},
             run_type="llm",
         ) as trace:
-            resp = chat(
-                settings.nvidia_vision_model,
-                messages=[
-                    {
-                        "role": "user",
-                        "content": [
-                            {"type": "text", "text": "Score this image:"},
-                            {"type": "image_url", "image_url": {"url": url}},
-                        ],
-                    }
-                ],
-                system=_JUDGE_SYSTEM,
-                temperature=0.1,
-                response_format=JudgeScoresResponse,
-                api_key=settings.nvidia_api_key,
-                base_url=settings.nvidia_chat_base_url or None,
+            messages = [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": "Score this image:"},
+                        {"type": "image_url", "image_url": {"url": url}},
+                    ],
+                }
+            ]
+            if settings.llm_provider == "nvidia":
+                resp = chat(
+                    settings.nvidia_vision_model,
+                    messages=messages,
+                    system=_JUDGE_SYSTEM,
+                    temperature=0.1,
+                    response_format=JudgeScoresResponse,
+                    api_key=settings.nvidia_api_key,
+                    base_url=settings.nvidia_chat_base_url or None,
+                )
+            else:
+                # Groq currently limits JSON-schema mode to GPT-OSS. Qwen 3.6
+                # supports vision with JSON-object mode; local validation
+                # below is therefore the final trust boundary for scores.
+                resp = groq_chat(
+                    settings.groq_vision_model,
+                    messages=messages,
+                    system=_JUDGE_SYSTEM,
+                    temperature=0.1,
+                    max_tokens=settings.groq_vision_max_tokens,
+                    response_format={"type": "json_object"},
+                    strict_json_schema=False,
+                    api_key=settings.groq_api_key,
+                    base_url=settings.groq_chat_base_url or None,
+                    timeout=settings.groq_chat_timeout_sec,
+                    max_attempts=settings.groq_chat_max_attempts,
+                    retry_backoff_sec=settings.groq_chat_retry_backoff_sec,
+                    max_retry_delay_sec=settings.groq_chat_max_retry_delay_sec,
+                )
+            raw_response = getattr(resp, "raw", {})
+            finish_trace(
+                trace,
+                {
+                    "provider": settings.llm_provider,
+                    "model": getattr(resp, "model", settings.active_vision_model),
+                    "response_chars": len(resp.text),
+                    "attempts": raw_response.get("_reelproof_attempts", 1),
+                    "tokens_in": getattr(resp, "tokens_in", None),
+                    "tokens_out": getattr(resp, "tokens_out", None),
+                },
             )
-            finish_trace(trace, {"model": settings.nvidia_vision_model, "response_chars": len(resp.text)})
 
         try:
             scores = parse_judge_scores(resp.text)

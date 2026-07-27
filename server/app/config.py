@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Literal
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -14,8 +15,24 @@ class Settings(BaseSettings):
         extra="ignore",
     )
 
-    # Providers
-    # Campaign planning and visual evaluation use NVIDIA NIM through GenBlaze.
+    # LLM providers. Groq is the default campaign path: its OpenAI-compatible
+    # API supports a structured text planner and a separate vision judge.
+    # Set LLM_PROVIDER=nvidia to retain the former NIM implementation.
+    llm_provider: Literal["groq", "nvidia"] = "groq"
+    groq_api_key: str = ""
+    groq_chat_base_url: str = ""
+    groq_chat_timeout_sec: float = 30.0
+    groq_chat_max_attempts: int = 2
+    groq_chat_retry_backoff_sec: float = 1.0
+    groq_chat_max_retry_delay_sec: float = 5.0
+    groq_planner_max_tokens: int = 2048
+    # GPT-OSS supports strict JSON schema; Qwen 3.6 receives rendered image
+    # URLs and returns a JSON object validated locally by the judge.
+    groq_planner_model: str = "openai/gpt-oss-20b"
+    groq_vision_model: str = "qwen/qwen3.6-27b"
+    groq_vision_max_tokens: int = 512
+
+    # NVIDIA NIM remains available as an explicit fallback through GenBlaze.
     nvidia_api_key: str = ""
     nvidia_chat_base_url: str = ""
     # Keep an unavailable NIM endpoint from consuming the whole campaign
@@ -139,6 +156,22 @@ class Settings(BaseSettings):
             self.gmi_product_image_fallback_models, self.gmi_product_image_model
         )
 
+    @property
+    def active_llm_api_key(self) -> str:
+        return self.groq_api_key if self.llm_provider == "groq" else self.nvidia_api_key
+
+    @property
+    def active_planner_model(self) -> str:
+        return self.groq_planner_model if self.llm_provider == "groq" else self.nvidia_planner_model
+
+    @property
+    def active_vision_model(self) -> str:
+        return self.groq_vision_model if self.llm_provider == "groq" else self.nvidia_vision_model
+
+    @property
+    def active_llm_key_env_name(self) -> str:
+        return "GROQ_API_KEY" if self.llm_provider == "groq" else "NVIDIA_API_KEY"
+
     def missing_phase1_settings(self) -> list[str]:
         """Return the credentials required by the paid Phase 1 smoke run."""
         required = {
@@ -152,7 +185,7 @@ class Settings(BaseSettings):
     def missing_campaign_settings(self) -> list[str]:
         """Return settings required before a browser-playable campaign starts."""
         required = {
-            "NVIDIA_API_KEY": self.nvidia_api_key,
+            self.active_llm_key_env_name: self.active_llm_api_key,
             "GMI_API_KEY": self.gmi_api_key,
             "STABILITY_API_KEY": self.stability_api_key,
             "B2_KEY_ID": self.b2_key_id,

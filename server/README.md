@@ -4,13 +4,15 @@ The API creates and tracks short-form campaign generation jobs. It uses SQLite
 for job state, GenBlaze for provenance-aware provider pipelines, and Backblaze
 B2 for durable assets.
 
-Campaign planning uses Z.ai's GLM-5.2 text flagship and frame evaluation uses
-Qwen 3.5 397B, NVIDIA's hosted multimodal NIM model, through
-`genblaze-nvidia`. Each call uses JSON-schema structured output, while local
-validation remains the final trust boundary. Set `NVIDIA_API_KEY` for
-NVIDIA's hosted NIM endpoint, or set `NVIDIA_CHAT_BASE_URL` to an
-OpenAI-compatible self-hosted NIM endpoint. The default model IDs can be
-overridden with `NVIDIA_PLANNER_MODEL` and `NVIDIA_VISION_MODEL`.
+Campaign planning defaults to Groq's `openai/gpt-oss-20b` with strict
+JSON-schema output, while rendered-frame evaluation uses Groq's multimodal
+`qwen/qwen3.6-27b`. Local Pydantic validation remains
+the final trust boundary for the vision model's JSON-object response. Set
+`GROQ_API_KEY` and `LLM_PROVIDER=groq`. Every request has an
+explicit timeout, retry cap, and `429`/`Retry-After` handling. Set
+`LLM_PROVIDER=nvidia` with `NVIDIA_API_KEY` to use the retained NIM fallback;
+model IDs can be overridden with the provider-specific `*_PLANNER_MODEL` and
+`*_VISION_MODEL` settings.
 
 ## Local setup
 
@@ -42,11 +44,11 @@ are implemented.
 ## LangSmith observability
 
 Set `LANGSMITH_TRACING=true`, `LANGSMITH_API_KEY`, and optionally
-`LANGSMITH_PROJECT=reelproof` to trace campaign roots, NVIDIA planner/judge
-calls, and every GenBlaze image, audio, and video pipeline. Traces contain
-prompts and generated asset URLs; use only an approved LangSmith workspace.
-The feature is fail-open: an unavailable LangSmith backend never fails a
-campaign. Query recent runs with:
+`LANGSMITH_PROJECT=reelproof` to trace campaign roots, each Groq attempt
+(including model, provider, latency, and retry number), and every GenBlaze
+image, audio, and video pipeline. Traces contain prompts and generated asset
+URLs; use only an approved LangSmith workspace. The feature is fail-open: an
+unavailable LangSmith backend never fails a campaign. Query recent runs with:
 
 ```bash
 langsmith trace list --project reelproof --limit 10 --show-hierarchy
@@ -59,7 +61,8 @@ campaigns. It creates real API jobs, waits for their verified B2-backed results,
 and prints durable reel and manifest URLs for the demo runbook.
 
 Before running it, ensure `ffmpeg` and `ffprobe` are on `PATH`, configure the
-NVIDIA, GMI, Stability, and B2 credentials, and start the API in another shell.
+selected LLM provider, GMI, Stability, and B2 credentials, and start the API
+in another shell.
 This makes paid provider requests.
 
 ```bash

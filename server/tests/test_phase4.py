@@ -14,9 +14,11 @@ from app.schemas import Beat
 
 class JudgeResponseTests(unittest.TestCase):
     def test_judge_uses_the_configured_vision_specialist_and_json_schema(self) -> None:
+        prior_provider = settings.llm_provider
         prior_key = settings.nvidia_api_key
         prior_model = settings.nvidia_vision_model
         prior_url = settings.nvidia_chat_base_url
+        settings.llm_provider = "nvidia"
         settings.nvidia_api_key = "test-nvidia-key"
         settings.nvidia_vision_model = "qwen/qwen3.5-397b-a17b"
         settings.nvidia_chat_base_url = "https://nim.example.test/v1"
@@ -35,6 +37,7 @@ class JudgeResponseTests(unittest.TestCase):
             with patch("app.engine.judge.chat", return_value=response) as chat:
                 evaluation = VisionJudge().evaluate(result)
         finally:
+            settings.llm_provider = prior_provider
             settings.nvidia_api_key = prior_key
             settings.nvidia_vision_model = prior_model
             settings.nvidia_chat_base_url = prior_url

@@ -11,6 +11,7 @@ from openai import OpenAI
 from ..config import settings
 from ..observability import finish_trace, trace_operation
 from ..schemas import Beat, BeatPlan
+from .groq import chat as groq_chat
 from .safety import ensure_prompt_allowed
 
 _SYSTEM = """\
@@ -48,7 +49,7 @@ _RETRYABLE_NVIDIA_ERRORS = frozenset(
 )
 
 
-def _planner_chat(prompt: str):
+def _nvidia_planner_chat(prompt: str):
     """Call NIM with a short, explicit budget and one bounded retry.
 
     ``genblaze_nvidia.chat`` constructs an OpenAI client with the SDK default
@@ -98,6 +99,27 @@ def _planner_chat(prompt: str):
     raise last_error or RuntimeError("NVIDIA planner failed without an error")
 
 
+def _planner_chat(prompt: str):
+    """Dispatch planning to the explicitly selected LLM provider."""
+    if settings.llm_provider == "nvidia":
+        return _nvidia_planner_chat(prompt)
+    return groq_chat(
+        settings.groq_planner_model,
+        system=_SYSTEM,
+        prompt=prompt,
+        temperature=0.8,
+        max_tokens=settings.groq_planner_max_tokens,
+        response_format=BeatPlan,
+        strict_json_schema=True,
+        api_key=settings.groq_api_key,
+        base_url=settings.groq_chat_base_url or None,
+        timeout=settings.groq_chat_timeout_sec,
+        max_attempts=settings.groq_chat_max_attempts,
+        retry_backoff_sec=settings.groq_chat_retry_backoff_sec,
+        max_retry_delay_sec=settings.groq_chat_max_retry_delay_sec,
+    )
+
+
 def parse_beat_plan(raw: str, beat_count: int) -> BeatPlan:
     """Validate the model response before it can enter the render pipeline."""
     raw = raw.strip()
@@ -126,8 +148,8 @@ def parse_beat_plan(raw: str, beat_count: int) -> BeatPlan:
 
 
 def plan_beats(topic: str, beat_count: int = 5, product_context: str | None = None) -> BeatPlan:
-    if not settings.nvidia_api_key:
-        raise RuntimeError("NVIDIA_API_KEY is required to plan a campaign")
+    if not settings.active_llm_api_key:
+        raise RuntimeError(f"{settings.active_llm_key_env_name} is required to plan a campaign")
     ensure_prompt_allowed(topic)
 
     user_msg = f"Topic: {topic}\nbeat_count: {beat_count}"
@@ -137,10 +159,21 @@ def plan_beats(topic: str, beat_count: int = 5, product_context: str | None = No
     with trace_operation(
         "reelproof.planner",
         inputs={"topic": topic, "beat_count": beat_count, "has_product_context": bool(product_context)},
-        metadata={"model": settings.nvidia_planner_model},
+        metadata={"provider": settings.llm_provider, "model": settings.active_planner_model},
         run_type="llm",
     ) as trace:
         resp = _planner_chat(user_msg)
-        finish_trace(trace, {"model": settings.nvidia_planner_model, "response_chars": len(resp.text)})
+        raw_response = getattr(resp, "raw", {})
+        finish_trace(
+            trace,
+            {
+                "provider": settings.llm_provider,
+                "model": getattr(resp, "model", settings.active_planner_model),
+                "response_chars": len(resp.text),
+                "attempts": raw_response.get("_reelproof_attempts", 1),
+                "tokens_in": getattr(resp, "tokens_in", None),
+                "tokens_out": getattr(resp, "tokens_out", None),
+            },
+        )
 
     return parse_beat_plan(resp.text, beat_count)

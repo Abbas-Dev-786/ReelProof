@@ -19,12 +19,16 @@ from app.schemas import BeatPlan, JobStatus, RenderMode
 
 class PlannerParsingTests(unittest.TestCase):
     def test_planner_uses_the_configured_text_specialist_and_json_schema(self) -> None:
+        prior_provider = settings.llm_provider
         prior_key = settings.nvidia_api_key
         prior_model = settings.nvidia_planner_model
         prior_url = settings.nvidia_chat_base_url
+        prior_timeout = settings.nvidia_chat_timeout_sec
+        settings.llm_provider = "nvidia"
         settings.nvidia_api_key = "test-nvidia-key"
         settings.nvidia_planner_model = "z-ai/glm-5.2"
         settings.nvidia_chat_base_url = "https://nim.example.test/v1"
+        settings.nvidia_chat_timeout_sec = 30.0
         try:
             with patch(
                 "app.engine.planner.chat",
@@ -37,9 +41,11 @@ class PlannerParsingTests(unittest.TestCase):
             ) as chat:
                 plan = plan_beats("Coffee", beat_count=1)
         finally:
+            settings.llm_provider = prior_provider
             settings.nvidia_api_key = prior_key
             settings.nvidia_planner_model = prior_model
             settings.nvidia_chat_base_url = prior_url
+            settings.nvidia_chat_timeout_sec = prior_timeout
 
         self.assertEqual(plan.hook, "h")
         self.assertEqual(chat.call_args.args[0], "z-ai/glm-5.2")
@@ -50,8 +56,10 @@ class PlannerParsingTests(unittest.TestCase):
         self.assertEqual(chat.call_args.kwargs["max_tokens"], 2048)
 
     def test_planner_retries_one_transient_nvidia_failure_with_no_sdk_retries(self) -> None:
+        prior_provider = settings.llm_provider
         prior_key = settings.nvidia_api_key
         prior_attempts = settings.nvidia_chat_max_attempts
+        settings.llm_provider = "nvidia"
         settings.nvidia_api_key = "test-nvidia-key"
         settings.nvidia_chat_max_attempts = 2
         response = SimpleNamespace(
@@ -74,6 +82,7 @@ class PlannerParsingTests(unittest.TestCase):
             ):
                 plan = plan_beats("Coffee", beat_count=1)
         finally:
+            settings.llm_provider = prior_provider
             settings.nvidia_api_key = prior_key
             settings.nvidia_chat_max_attempts = prior_attempts
 
@@ -172,7 +181,9 @@ class LocalRenderGuardTests(unittest.TestCase):
             "b2_public_url_base",
         )
         prior_values = {field: getattr(settings, field) for field in credential_fields}
+        prior_provider = settings.llm_provider
         try:
+            settings.llm_provider = "nvidia"
             for field in credential_fields:
                 setattr(settings, field, "test-value")
             with (
@@ -190,6 +201,7 @@ class LocalRenderGuardTests(unittest.TestCase):
                     emit=lambda *_: None,
                 )
         finally:
+            settings.llm_provider = prior_provider
             for field, value in prior_values.items():
                 setattr(settings, field, value)
 
