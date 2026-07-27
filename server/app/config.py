@@ -15,11 +15,16 @@ class Settings(BaseSettings):
     )
 
     # Providers
-    # OpenAI remains optional for the Phase 1 TTS smoke check only. Campaign
-    # planning and visual evaluation use NVIDIA NIM through GenBlaze.
-    openai_api_key: str = ""
+    # Campaign planning and visual evaluation use NVIDIA NIM through GenBlaze.
     nvidia_api_key: str = ""
     nvidia_chat_base_url: str = ""
+    # Keep an unavailable NIM endpoint from consuming the whole campaign
+    # deadline. The planner retries only transient failures within this budget.
+    nvidia_chat_timeout_sec: float = 30.0
+    nvidia_chat_max_attempts: int = 2
+    nvidia_chat_retry_backoff_sec: float = 1.0
+    nvidia_chat_max_retry_delay_sec: float = 5.0
+    nvidia_planner_max_tokens: int = 2048
     # Specialist NIM models: text planning and multimodal visual evaluation.
     nvidia_planner_model: str = "z-ai/glm-5.2"
     nvidia_vision_model: str = "qwen/qwen3.5-397b-a17b"
@@ -130,11 +135,27 @@ class Settings(BaseSettings):
     def missing_phase1_settings(self) -> list[str]:
         """Return the credentials required by the paid Phase 1 smoke run."""
         required = {
-            "OPENAI_API_KEY": self.openai_api_key,
             "GMI_API_KEY": self.gmi_api_key,
+            "STABILITY_API_KEY": self.stability_api_key,
             "B2_KEY_ID": self.b2_key_id,
             "B2_APP_KEY": self.b2_app_key,
         }
+        return [name for name, value in required.items() if not value]
+
+    def missing_campaign_settings(self) -> list[str]:
+        """Return settings required before a browser-playable campaign starts."""
+        required = {
+            "NVIDIA_API_KEY": self.nvidia_api_key,
+            "GMI_API_KEY": self.gmi_api_key,
+            "STABILITY_API_KEY": self.stability_api_key,
+            "B2_KEY_ID": self.b2_key_id,
+            "B2_APP_KEY": self.b2_app_key,
+            # The API returns stored asset URLs to the browser. Without a public
+            # base (or a future presigning implementation), private B2 URLs 403.
+            "B2_PUBLIC_URL_BASE": self.b2_public_url_base,
+        }
+        if self.voiceover_enabled:
+            required["ELEVENLABS_API_KEY"] = self.elevenlabs_api_key
         return [name for name, value in required.items() if not value]
 
 

@@ -34,8 +34,10 @@ executables without making paid provider calls:
 .venv/bin/python smoke_test.py
 ```
 
-`smoke_test.py --live` makes paid provider requests and should only be run with
-an approved test account and B2 bucket.
+`smoke_test.py --live` makes paid image and music requests and should only be
+run with an approved test account and B2 bucket. Full campaign creation also
+requires a browser-reachable `B2_PUBLIC_URL_BASE` until presigned asset URLs
+are implemented.
 
 ## Demo showcases
 

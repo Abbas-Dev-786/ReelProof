@@ -332,6 +332,11 @@ def run_campaign(
     emit("engine.started", {"job_id": job_id, "topic": topic, "mode": mode.value})
 
     try:
+        if missing := settings.missing_campaign_settings():
+            raise RuntimeError(
+                "Campaign configuration is incomplete; set " + ", ".join(missing)
+            )
+
         # A unique work directory prevents simultaneous jobs from overwriting
         # each other's captioned frames and assembled reel.
         work_dir = settings.output_path / job_id

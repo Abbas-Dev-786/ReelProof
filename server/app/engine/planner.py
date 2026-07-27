@@ -1,8 +1,12 @@
 from __future__ import annotations
 
 import json
+import time
 
+from genblaze_core.exceptions import ProviderError
+from genblaze_core.models.enums import ProviderErrorCode
 from genblaze_nvidia import chat
+from openai import OpenAI
 
 from ..config import settings
 from ..schemas import Beat, BeatPlan
@@ -32,6 +36,65 @@ Rules:
 - 3-8 beats depending on beat_count param
 - hashtags: 5-10 relevant tags without the # symbol
 """
+
+_DEFAULT_NVIDIA_CHAT_BASE_URL = "https://integrate.api.nvidia.com/v1"
+_RETRYABLE_NVIDIA_ERRORS = frozenset(
+    {
+        ProviderErrorCode.TIMEOUT,
+        ProviderErrorCode.RATE_LIMIT,
+        ProviderErrorCode.SERVER_ERROR,
+    }
+)
+
+
+def _planner_chat(prompt: str):
+    """Call NIM with a short, explicit budget and one bounded retry.
+
+    ``genblaze_nvidia.chat`` constructs an OpenAI client with the SDK default
+    of two internal retries. A 60-second timeout therefore held failed jobs for
+    roughly three minutes. Supplying our own client disables those hidden
+    retries so the campaign's configured attempt budget is authoritative.
+    """
+    attempts = max(1, settings.nvidia_chat_max_attempts)
+    timeout = max(1.0, settings.nvidia_chat_timeout_sec)
+    base_url = settings.nvidia_chat_base_url or _DEFAULT_NVIDIA_CHAT_BASE_URL
+    last_error: ProviderError | None = None
+
+    for attempt in range(1, attempts + 1):
+        client = OpenAI(
+            api_key=settings.nvidia_api_key,
+            base_url=base_url,
+            timeout=timeout,
+            max_retries=0,
+        )
+        try:
+            return chat(
+                settings.nvidia_planner_model,
+                system=_SYSTEM,
+                prompt=prompt,
+                temperature=0.8,
+                max_tokens=settings.nvidia_planner_max_tokens,
+                response_format=BeatPlan,
+                api_key=settings.nvidia_api_key,
+                base_url=settings.nvidia_chat_base_url or None,
+                timeout=timeout,
+                client=client,
+            )
+        except ProviderError as exc:
+            last_error = exc
+            if exc.error_code not in _RETRYABLE_NVIDIA_ERRORS or attempt == attempts:
+                raise
+            delay = min(
+                max(settings.nvidia_chat_retry_backoff_sec, exc.retry_after or 0.0),
+                settings.nvidia_chat_max_retry_delay_sec,
+            )
+            time.sleep(delay)
+        finally:
+            client.close()
+
+    # The loop always returns or raises; this guards type checkers and protects
+    # against a malformed future ProviderError implementation.
+    raise last_error or RuntimeError("NVIDIA planner failed without an error")
 
 
 def parse_beat_plan(raw: str, beat_count: int) -> BeatPlan:
@@ -70,14 +133,6 @@ def plan_beats(topic: str, beat_count: int = 5, product_context: str | None = No
     if product_context:
         user_msg += f"\nProduct context: {product_context}"
 
-    resp = chat(
-        settings.nvidia_planner_model,
-        system=_SYSTEM,
-        prompt=user_msg,
-        temperature=0.8,
-        response_format=BeatPlan,
-        api_key=settings.nvidia_api_key,
-        base_url=settings.nvidia_chat_base_url or None,
-    )
+    resp = _planner_chat(user_msg)
 
     return parse_beat_plan(resp.text, beat_count)

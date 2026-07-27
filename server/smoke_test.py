@@ -6,7 +6,7 @@ Run from ``server/`` using the project's Conda environment:
     conda run -n myenv python smoke_test.py --live
 
 The default command never calls a paid provider. ``--live`` proves the
-Phase 1 image -> B2 -> verified-manifest and TTS primitives using the
+Phase 1 image -> B2 -> verified-manifest and music primitives using the
 credentials in ``server/.env``.
 
 GenBlaze's FFmpegCompositor accepts a *video* and an audio asset, not an
@@ -55,7 +55,7 @@ def preflight() -> bool:
         ok &= report("required GenBlaze packages import", True)
 
     print(
-        "\nUse --live only after the checks above pass; it makes one image and one TTS request.\n"
+        "\nUse --live only after the checks above pass; it makes one image and one music request.\n"
     )
     return bool(ok)
 
@@ -63,9 +63,9 @@ def preflight() -> bool:
 def live_smoke() -> bool:
     """Make the two paid Phase 1 provider calls and verify B2 persistence."""
     from genblaze_core import Modality, Pipeline
-    from genblaze_core.providers import per_input_chars, per_unit
+    from genblaze_core.providers import per_unit
     from genblaze_gmicloud import GMICloudImageProvider
-    from genblaze_openai import OpenAITTSProvider
+    from genblaze_stability_audio import StabilityAudioProvider
 
     from app.config import settings
     from app.storage import build_sink
@@ -101,29 +101,27 @@ def live_smoke() -> bool:
         image_verified = image_result.manifest.verify()
         report("image -> B2 -> manifest.verify()", image_verified, image_result.run.run_id)
 
-        tts = OpenAITTSProvider(api_key=settings.openai_api_key, output_dir=settings.output_dir)
-        tts.models.register_pricing("tts-1", per_input_chars(15.00, per=1_000_000))
-        tts_result = (
-            Pipeline("phase1-tts-b2")
+        music = StabilityAudioProvider(api_key=settings.stability_api_key)
+        music_result = (
+            Pipeline("phase1-music-b2")
             .step(
-                tts,
-                model="tts-1",
-                prompt="This is a ReelProof Phase 1 audio verification clip.",
+                music,
+                model="stable-audio-2.5",
+                prompt="A short, warm instrumental music bed for a product reel. No vocals.",
                 modality=Modality.AUDIO,
-                voice="nova",
-                response_format="mp3",
+                duration=5,
             )
-            .run(sink=sink, timeout=90)
+            .run(sink=sink, timeout=120)
         )
-        tts_verified = tts_result.manifest.verify()
-        report("TTS -> B2 -> manifest.verify()", tts_verified, tts_result.run.run_id)
+        music_verified = music_result.manifest.verify()
+        report("music -> B2 -> manifest.verify()", music_verified, music_result.run.run_id)
 
         print(
             "\nPhase 1 live primitives passed."
-            if image_verified and tts_verified
+            if image_verified and music_verified
             else "\nPhase 1 live primitives failed."
         )
-        return bool(image_verified and tts_verified)
+        return bool(image_verified and music_verified)
     except Exception as exc:
         report("Phase 1 live smoke", False, str(exc))
         return False
@@ -132,7 +130,7 @@ def live_smoke() -> bool:
 def main() -> int:
     parser = argparse.ArgumentParser(description="ReelProof Phase 1 checks")
     parser.add_argument(
-        "--live", action="store_true", help="run paid image and TTS provider checks"
+        "--live", action="store_true", help="run paid image and music provider checks"
     )
     args = parser.parse_args()
 

@@ -6,6 +6,9 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
+from genblaze_core.exceptions import ProviderError
+from genblaze_core.models.enums import ProviderErrorCode
+
 from app.config import settings
 from app.engine.assemble import _build_video_filter, assemble_pov_montage, assemble_slideshow
 from app.engine.captions import _ffmpeg_escape, _wrap
@@ -43,6 +46,42 @@ class PlannerParsingTests(unittest.TestCase):
         self.assertIs(chat.call_args.kwargs["response_format"], BeatPlan)
         self.assertEqual(chat.call_args.kwargs["api_key"], "test-nvidia-key")
         self.assertEqual(chat.call_args.kwargs["base_url"], "https://nim.example.test/v1")
+        self.assertEqual(chat.call_args.kwargs["timeout"], 30.0)
+        self.assertEqual(chat.call_args.kwargs["max_tokens"], 2048)
+
+    def test_planner_retries_one_transient_nvidia_failure_with_no_sdk_retries(self) -> None:
+        prior_key = settings.nvidia_api_key
+        prior_attempts = settings.nvidia_chat_max_attempts
+        settings.nvidia_api_key = "test-nvidia-key"
+        settings.nvidia_chat_max_attempts = 2
+        response = SimpleNamespace(
+            text=(
+                '{"hook":"h","beats":[{"index":0,"concept":"c","caption":"x"}],'
+                '"suggested_caption":"s","hashtags":[]}'
+            )
+        )
+        try:
+            with (
+                patch("app.engine.planner.OpenAI") as openai,
+                patch(
+                    "app.engine.planner.chat",
+                    side_effect=[
+                        ProviderError("timeout", error_code=ProviderErrorCode.TIMEOUT),
+                        response,
+                    ],
+                ) as chat,
+                patch("app.engine.planner.time.sleep") as sleep,
+            ):
+                plan = plan_beats("Coffee", beat_count=1)
+        finally:
+            settings.nvidia_api_key = prior_key
+            settings.nvidia_chat_max_attempts = prior_attempts
+
+        self.assertEqual(plan.hook, "h")
+        self.assertEqual(chat.call_count, 2)
+        self.assertEqual(openai.call_count, 2)
+        self.assertTrue(all(call.kwargs["max_retries"] == 0 for call in openai.call_args_list))
+        sleep.assert_called_once_with(1.0)
 
     def test_accepts_fenced_json_with_ordered_beats(self) -> None:
         plan = parse_beat_plan(
@@ -124,18 +163,35 @@ class LocalRenderGuardTests(unittest.TestCase):
             hashtags=["coffee"],
         )
         expected = SimpleNamespace(status=JobStatus.done)
-        with (
-            patch("app.engine.run_engine.build_sink", return_value=SimpleNamespace()),
-            patch("app.engine.run_engine.plan_beats", return_value=plan),
-            patch("app.engine.run_engine._run_pov_campaign", return_value=expected) as pov_engine,
-        ):
-            result = run_campaign(
-                job_id="phase6-test",
-                topic="A quiet coffee ritual",
-                mode=RenderMode.pov,
-                beat_count=3,
-                emit=lambda *_: None,
-            )
+        credential_fields = (
+            "nvidia_api_key",
+            "gmi_api_key",
+            "stability_api_key",
+            "b2_key_id",
+            "b2_app_key",
+            "b2_public_url_base",
+        )
+        prior_values = {field: getattr(settings, field) for field in credential_fields}
+        try:
+            for field in credential_fields:
+                setattr(settings, field, "test-value")
+            with (
+                patch("app.engine.run_engine.build_sink", return_value=SimpleNamespace()),
+                patch("app.engine.run_engine.plan_beats", return_value=plan),
+                patch(
+                    "app.engine.run_engine._run_pov_campaign", return_value=expected
+                ) as pov_engine,
+            ):
+                result = run_campaign(
+                    job_id="phase6-test",
+                    topic="A quiet coffee ritual",
+                    mode=RenderMode.pov,
+                    beat_count=3,
+                    emit=lambda *_: None,
+                )
+        finally:
+            for field, value in prior_values.items():
+                setattr(settings, field, value)
 
         self.assertIs(result, expected)
         pov_engine.assert_called_once()
