@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import unittest
+from contextlib import contextmanager
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 from app.config import settings
-from app.engine.groq import chat
+from app.engine.groq import DEFAULT_CHAT_BASE_URL, chat
 from app.engine.judge import VisionJudge
 from app.engine.planner import plan_beats
 from app.schemas import BeatPlan
@@ -84,6 +85,69 @@ class GroqChatTests(unittest.TestCase):
         self.assertTrue(all(call.kwargs["max_retries"] == 0 for call in openai.call_args_list))
         sleep.assert_called_once_with(2.0)
 
+    def test_accepts_a_full_chat_completions_endpoint_as_the_base_url(self) -> None:
+        client = MagicMock()
+        client.chat.completions.create.return_value = SimpleNamespace(
+            model_dump=lambda: {
+                "model": "openai/gpt-oss-20b",
+                "choices": [{"message": {"content": "{}"}, "finish_reason": "stop"}],
+                "usage": {},
+            }
+        )
+        with patch("app.engine.groq.OpenAI", return_value=client) as openai:
+            chat(
+                "openai/gpt-oss-20b",
+                prompt="Use the configured endpoint",
+                api_key="test-groq-key",
+                base_url=f"{DEFAULT_CHAT_BASE_URL}/chat/completions",
+                max_attempts=1,
+            )
+
+        self.assertEqual(openai.call_args.kwargs["base_url"], DEFAULT_CHAT_BASE_URL)
+
+    def test_redacts_signed_asset_urls_from_trace_inputs(self) -> None:
+        raw = SimpleNamespace(
+            model_dump=lambda: {
+                "model": "qwen/qwen3.6-27b",
+                "choices": [{"message": {"content": "{}"}, "finish_reason": "stop"}],
+                "usage": {},
+            }
+        )
+        client = MagicMock()
+        client.chat.completions.create.return_value = raw
+        trace_inputs: dict[str, object] = {}
+
+        @contextmanager
+        def record_trace(*_args, **kwargs):
+            trace_inputs.update(kwargs["inputs"])
+            yield None
+
+        signed_url = (
+            "https://s3.example.test/reelproof/frame.png?"
+            "X-Amz-Credential=access-key&X-Amz-Signature=secret-signature"
+        )
+        with (
+            patch("app.engine.groq.OpenAI", return_value=client),
+            patch("app.engine.groq.trace_operation", record_trace),
+        ):
+            chat(
+                "qwen/qwen3.6-27b",
+                messages=[
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "text", "text": "Score this image"},
+                            {"type": "image_url", "image_url": {"url": signed_url}},
+                        ],
+                    }
+                ],
+                api_key="test-groq-key",
+                max_attempts=1,
+            )
+
+        traced_url = trace_inputs["messages"][0]["content"][1]["image_url"]["url"]
+        self.assertEqual(traced_url, "https://s3.example.test/reelproof/frame.png?redacted=1")
+
 
 class GroqProviderDispatchTests(unittest.TestCase):
     def setUp(self) -> None:
@@ -141,7 +205,13 @@ class GroqProviderDispatchTests(unittest.TestCase):
                 steps=[SimpleNamespace(assets=[SimpleNamespace(url="https://example.test/frame.png")])]
             )
         )
-        with patch("app.engine.judge.groq_chat", return_value=response) as groq_chat:
+        with (
+            patch("app.engine.judge.groq_chat", return_value=response) as groq_chat,
+            patch(
+                "app.engine.judge.readable_asset_url",
+                return_value="https://s3.example.test/frame.png?redacted=signature",
+            ),
+        ):
             evaluation = VisionJudge().evaluate(result)
 
         self.assertTrue(evaluation.passed)

@@ -11,7 +11,7 @@ from ..config import settings
 from ..jobs.store import complete_checkpoint, pending_checkpoints, save_checkpoint
 from ..observability import finish_trace, ingest_with_trace, trace_operation
 from ..schemas import BeatPlan, BeatResult, CampaignResult, JobStatus, RenderMode
-from ..storage import build_sink
+from ..storage import build_sink, readable_asset_url
 from .assemble import assemble_pov_montage, assemble_slideshow
 from .audio import GeneratedAudio, generate_music_asset, generate_voiceover_asset
 from .beat_render import POVBeatRender, resume_pov_video, run_pov_beat_loop
@@ -279,12 +279,12 @@ def _run_pov_campaign(
 
     emit("step.started", {"step": "assemble", "message": "Assembling POV montage..."})
     reel_path = assemble_pov_montage(
-        [rendered.video_url for rendered in rendered_beats],
-        music.url,
+        [readable_asset_url(rendered.video_url) for rendered in rendered_beats],
+        readable_asset_url(music.url),
         settings.pov_clip_duration_sec,
         output_dir=work_dir,
         captions=[beat.caption for beat in beat_plan.beats],
-        voiceover_url=voiceover.url if voiceover else None,
+        voiceover_url=readable_asset_url(voiceover.url) if voiceover else None,
     )
     emit("step.completed", {"step": "assemble", "path": reel_path})
 
@@ -445,7 +445,9 @@ def _run_campaign(
             )
 
             # Burn caption
-            captioned_path = burn_caption(url, beat.caption, beat.index, output_dir=work_dir)
+            captioned_path = burn_caption(
+                readable_asset_url(url), beat.caption, beat.index, output_dir=work_dir
+            )
             captioned_paths.append(captioned_path)
             captioned_url = _store_local_intermediate(
                 job_id=job_id,
@@ -491,10 +493,10 @@ def _run_campaign(
         emit("step.started", {"step": "assemble", "message": "Assembling slideshow..."})
         reel_path = assemble_slideshow(
             captioned_paths,
-            music.url,
+            readable_asset_url(music.url),
             settings.slideshow_beat_duration_sec,
             output_dir=work_dir,
-            voiceover_url=voiceover.url if voiceover else None,
+            voiceover_url=readable_asset_url(voiceover.url) if voiceover else None,
         )
         emit("step.completed", {"step": "assemble", "path": reel_path})
 

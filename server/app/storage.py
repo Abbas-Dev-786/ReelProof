@@ -9,6 +9,8 @@ from genblaze_s3 import S3StorageBackend
 
 from .config import settings
 
+_VISION_URL_TTL_SEC = 900
+
 
 @lru_cache(maxsize=1)
 def get_backend() -> S3StorageBackend:
@@ -60,6 +62,20 @@ def build_sink() -> ObjectStorageSink:
         parquet_sink=parquet_sink,
         manifest_lock=lock_config,
     )
+
+
+def readable_asset_url(asset_url: str) -> str:
+    """Return a short-lived readable URL when an asset belongs to this B2 bucket.
+
+    Third-party providers and local ffmpeg assembly cannot read a private B2
+    object through its durable browser URL. The durable URL remains in
+    manifests; only the immediate reader receives this signed URL.
+    """
+    backend = get_backend()
+    key = backend.key_from_url(asset_url)
+    if key is None:
+        return asset_url
+    return backend.presigned_get_url(key, expires_in=_VISION_URL_TTL_SEC)
 
 
 def verify_manifest_json(manifest_json: str) -> dict[str, Any]:

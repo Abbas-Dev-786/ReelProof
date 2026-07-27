@@ -5,6 +5,7 @@ from __future__ import annotations
 import copy
 import time
 from typing import Any
+from urllib.parse import urlsplit, urlunsplit
 
 from genblaze_core.exceptions import ProviderError
 from genblaze_core.models.chat import ChatMessage, ChatResponse, ToolCall, coerce_response_format
@@ -15,6 +16,7 @@ from openai import OpenAI
 from ..observability import finish_trace, trace_operation
 
 DEFAULT_CHAT_BASE_URL = "https://api.groq.com/openai/v1"
+_CHAT_COMPLETIONS_SUFFIX = "/chat/completions"
 _RETRYABLE_ERRORS = frozenset(
     {
         ProviderErrorCode.TIMEOUT,
@@ -22,6 +24,34 @@ _RETRYABLE_ERRORS = frozenset(
         ProviderErrorCode.SERVER_ERROR,
     }
 )
+
+
+def _api_base_url(base_url: str | None) -> str:
+    """Return the API root expected by the OpenAI-compatible client.
+
+    The OpenAI SDK appends ``/chat/completions`` when invoking the chat API.
+    Accepting a copied full endpoint here avoids producing the invalid doubled
+    path ``.../chat/completions/chat/completions``.
+    """
+    value = (base_url or DEFAULT_CHAT_BASE_URL).strip().rstrip("/")
+    if value.endswith(_CHAT_COMPLETIONS_SUFFIX):
+        return value[: -len(_CHAT_COMPLETIONS_SUFFIX)]
+    return value
+
+
+def _trace_safe_value(value: Any) -> Any:
+    """Redact query strings while preserving enough URL context for traces."""
+    if isinstance(value, dict):
+        return {key: _trace_safe_value(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_trace_safe_value(item) for item in value]
+    if isinstance(value, str):
+        parsed = urlsplit(value)
+        if parsed.scheme and parsed.netloc and parsed.query:
+            return urlunsplit(
+                (parsed.scheme, parsed.netloc, parsed.path, "redacted=1", parsed.fragment)
+            )
+    return value
 
 
 def _normalize_messages(
@@ -180,7 +210,7 @@ def chat(
     for attempt in range(1, attempts + 1):
         with trace_operation(
             "reelproof.groq.chat",
-            inputs={"model": model, "messages": wire_messages},
+            inputs={"model": model, "messages": _trace_safe_value(wire_messages)},
             metadata={
                 "provider": "groq",
                 "model": model,
@@ -191,7 +221,7 @@ def chat(
         ) as trace:
             client = OpenAI(
                 api_key=api_key,
-                base_url=base_url or DEFAULT_CHAT_BASE_URL,
+                base_url=_api_base_url(base_url),
                 timeout=timeout,
                 max_retries=0,
             )

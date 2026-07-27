@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import unittest
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from genblaze_core import EvaluationResult
 
@@ -10,6 +10,7 @@ from app.config import settings
 from app.engine.judge import JudgeScoresResponse, VisionJudge, parse_judge_scores
 from app.engine.loop import refine_prompt, run_beat_loop
 from app.schemas import Beat
+from app.storage import readable_asset_url
 
 
 class JudgeResponseTests(unittest.TestCase):
@@ -34,7 +35,13 @@ class JudgeResponseTests(unittest.TestCase):
             )
         )
         try:
-            with patch("app.engine.judge.chat", return_value=response) as chat:
+            with (
+                patch("app.engine.judge.chat", return_value=response) as chat,
+                patch(
+                    "app.engine.judge.readable_asset_url",
+                    return_value="https://s3.example.test/frame.png?redacted=signature",
+                ) as signed_url,
+            ):
                 evaluation = VisionJudge().evaluate(result)
         finally:
             settings.llm_provider = prior_provider
@@ -48,6 +55,11 @@ class JudgeResponseTests(unittest.TestCase):
         self.assertEqual(chat.call_args.kwargs["temperature"], 0.1)
         self.assertEqual(chat.call_args.kwargs["api_key"], "test-nvidia-key")
         self.assertEqual(chat.call_args.kwargs["base_url"], "https://nim.example.test/v1")
+        signed_url.assert_called_once_with("https://example.test/frame.png")
+        self.assertEqual(
+            chat.call_args.kwargs["messages"][0]["content"][1]["image_url"]["url"],
+            "https://s3.example.test/frame.png?redacted=signature",
+        )
 
     def test_parses_fenced_scores(self) -> None:
         scores = parse_judge_scores(
@@ -65,6 +77,29 @@ class JudgeResponseTests(unittest.TestCase):
                 '{"hook_strength": 1.2, "text_legibility": 0.9, "visual_artifacts": 0.7,'
                 '"on_brand": 0.85, "overall": 0.81, "feedback": null}'
             )
+
+
+class VisionAssetUrlTests(unittest.TestCase):
+    def test_signs_b2_asset_urls_for_external_vision_models(self) -> None:
+        backend = MagicMock()
+        backend.key_from_url.return_value = "reelproof/run/frame.png"
+        backend.presigned_get_url.return_value = "https://s3.example.test/frame.png?signature=secret"
+
+        with patch("app.storage.get_backend", return_value=backend):
+            url = readable_asset_url("https://cdn.example.test/reelproof/run/frame.png")
+
+        self.assertEqual(url, "https://s3.example.test/frame.png?signature=secret")
+        backend.presigned_get_url.assert_called_once_with("reelproof/run/frame.png", expires_in=900)
+
+    def test_keeps_foreign_asset_urls_unchanged(self) -> None:
+        backend = MagicMock()
+        backend.key_from_url.return_value = None
+
+        with patch("app.storage.get_backend", return_value=backend):
+            url = readable_asset_url("https://provider.example.test/frame.png")
+
+        self.assertEqual(url, "https://provider.example.test/frame.png")
+        backend.presigned_get_url.assert_not_called()
 
 
 class SelfHealingLoopTests(unittest.TestCase):

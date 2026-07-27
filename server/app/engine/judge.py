@@ -9,6 +9,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from ..config import settings
 from ..observability import finish_trace, trace_operation
+from ..storage import readable_asset_url
 from .groq import chat as groq_chat
 
 _JUDGE_SYSTEM = """\
@@ -65,7 +66,8 @@ class VisionJudge(Evaluator):
         if image_asset is None:
             return EvaluationResult(passed=False, score=0.0, feedback="No asset produced")
 
-        url = image_asset.url
+        url = str(image_asset.url)
+        provider_url = readable_asset_url(url)
 
         with trace_operation(
             "reelproof.vision-judge",
@@ -78,7 +80,7 @@ class VisionJudge(Evaluator):
                     "role": "user",
                     "content": [
                         {"type": "text", "text": "Score this image:"},
-                        {"type": "image_url", "image_url": {"url": url}},
+                        {"type": "image_url", "image_url": {"url": provider_url}},
                     ],
                 }
             ]
