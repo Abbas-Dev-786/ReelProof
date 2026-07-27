@@ -120,6 +120,7 @@ def _response_format(response_format: dict[str, Any] | type | None, *, strict: b
 def _error_code(exc: Exception) -> ProviderErrorCode:
     response = getattr(exc, "response", None)
     status_code = getattr(response, "status_code", None)
+    message = str(exc).lower()
     if status_code == 429:
         return ProviderErrorCode.RATE_LIMIT
     if status_code in (401, 403):
@@ -127,11 +128,14 @@ def _error_code(exc: Exception) -> ProviderErrorCode:
     if status_code == 404:
         return ProviderErrorCode.MODEL_ERROR
     if status_code == 400:
+        # JSON Object mode can occasionally fail before producing content.
+        # Groq labels this a 400, but retrying is the documented recovery.
+        if "json_validate_failed" in message:
+            return ProviderErrorCode.SERVER_ERROR
         return ProviderErrorCode.INVALID_INPUT
     if isinstance(status_code, int) and status_code >= 500:
         return ProviderErrorCode.SERVER_ERROR
 
-    message = str(exc).lower()
     if "timeout" in message or "timed out" in message:
         return ProviderErrorCode.TIMEOUT
     if "rate limit" in message or "too many requests" in message:

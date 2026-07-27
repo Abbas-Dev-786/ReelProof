@@ -41,6 +41,7 @@ Rules:
 
 _DEFAULT_NVIDIA_CHAT_BASE_URL = "https://integrate.api.nvidia.com/v1"
 _MIN_GROQ_PLANNER_COMPLETION_TOKENS = 4096
+_GROQ_PLANNER_LOCAL_VALIDATION_ATTEMPTS = 2
 _RETRYABLE_NVIDIA_ERRORS = frozenset(
     {
         ProviderErrorCode.TIMEOUT,
@@ -109,17 +110,20 @@ def _planner_chat(prompt: str):
         system=_SYSTEM,
         prompt=prompt,
         temperature=0.8,
-        # GPT-OSS's completion budget includes reasoning tokens. The default
-        # medium effort can exhaust a 2,048-token cap before strict JSON is
-        # emitted, so use the lightweight mode with a safe minimum budget.
+        # GPT-OSS's completion budget includes reasoning tokens. Use a
+        # lightweight reasoning mode and a safe minimum budget for this short,
+        # deterministic plan.
         max_tokens=max(settings.groq_planner_max_tokens, _MIN_GROQ_PLANNER_COMPLETION_TOKENS),
         reasoning_effort="low",
-        response_format=BeatPlan,
-        strict_json_schema=True,
+        # Groq's strict-schema endpoint can reject a valid request before the
+        # model returns content. JSON Object mode avoids that provider-side
+        # failure; ``parse_beat_plan`` remains the local schema boundary.
+        response_format={"type": "json_object"},
+        strict_json_schema=False,
         api_key=settings.groq_api_key,
         base_url=settings.groq_chat_base_url or None,
         timeout=settings.groq_chat_timeout_sec,
-        max_attempts=settings.groq_chat_max_attempts,
+        max_attempts=max(3, settings.groq_chat_max_attempts),
         retry_backoff_sec=settings.groq_chat_retry_backoff_sec,
         max_retry_delay_sec=settings.groq_chat_max_retry_delay_sec,
     )
@@ -167,18 +171,32 @@ def plan_beats(topic: str, beat_count: int = 5, product_context: str | None = No
         metadata={"provider": settings.llm_provider, "model": settings.active_planner_model},
         run_type="llm",
     ) as trace:
-        resp = _planner_chat(user_msg)
-        raw_response = getattr(resp, "raw", {})
-        finish_trace(
-            trace,
-            {
-                "provider": settings.llm_provider,
-                "model": getattr(resp, "model", settings.active_planner_model),
-                "response_chars": len(resp.text),
-                "attempts": raw_response.get("_reelproof_attempts", 1),
-                "tokens_in": getattr(resp, "tokens_in", None),
-                "tokens_out": getattr(resp, "tokens_out", None),
-            },
-        )
+        last_error: Exception | None = None
+        for attempt in range(1, _GROQ_PLANNER_LOCAL_VALIDATION_ATTEMPTS + 1):
+            resp = _planner_chat(user_msg)
+            try:
+                plan = parse_beat_plan(resp.text, beat_count)
+            except (KeyError, TypeError, ValueError) as exc:
+                last_error = exc
+                if attempt == _GROQ_PLANNER_LOCAL_VALIDATION_ATTEMPTS:
+                    raise RuntimeError(
+                        "Planner returned an invalid JSON plan after "
+                        f"{_GROQ_PLANNER_LOCAL_VALIDATION_ATTEMPTS} attempts: {exc}"
+                    ) from exc
+                continue
 
-    return parse_beat_plan(resp.text, beat_count)
+            raw_response = getattr(resp, "raw", {})
+            finish_trace(
+                trace,
+                {
+                    "provider": settings.llm_provider,
+                    "model": getattr(resp, "model", settings.active_planner_model),
+                    "response_chars": len(resp.text),
+                    "attempts": raw_response.get("_reelproof_attempts", 1),
+                    "tokens_in": getattr(resp, "tokens_in", None),
+                    "tokens_out": getattr(resp, "tokens_out", None),
+                },
+            )
+            return plan
+
+    raise last_error or RuntimeError("Planner failed without an error")

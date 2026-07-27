@@ -30,6 +30,7 @@ def report(label: str, ok: bool, detail: str = "") -> bool:
 def preflight() -> bool:
     """Run local checks only; no network calls and no paid inference."""
     from app.config import settings
+    from app.engine.captions import caption_renderer_error
 
     print("\n=== ReelProof Phase 1 preflight ===\n")
     ok = True
@@ -43,6 +44,12 @@ def preflight() -> bool:
 
     ffmpeg = shutil.which("ffmpeg")
     ok &= report("ffmpeg on PATH", ffmpeg is not None, ffmpeg or "install ffmpeg before Phase 2")
+    renderer_error = caption_renderer_error()
+    ok &= report(
+        "ffmpeg caption renderer",
+        renderer_error is None,
+        renderer_error or "drawtext filter available",
+    )
 
     try:
         import genblaze_core  # noqa: F401
@@ -135,7 +142,7 @@ def main() -> int:
     args = parser.parse_args()
 
     passed = preflight()
-    if args.live:
+    if args.live and passed:
         passed = live_smoke() and passed
     return 0 if passed else 1
 

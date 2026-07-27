@@ -189,6 +189,7 @@ class LocalRenderGuardTests(unittest.TestCase):
             with (
                 patch("app.engine.run_engine.build_sink", return_value=SimpleNamespace()),
                 patch("app.engine.run_engine.plan_beats", return_value=plan),
+                patch("app.engine.run_engine.caption_renderer_error", return_value=None),
                 patch(
                     "app.engine.run_engine._run_pov_campaign", return_value=expected
                 ) as pov_engine,

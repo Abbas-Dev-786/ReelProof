@@ -15,7 +15,7 @@ from ..storage import build_sink, readable_asset_url
 from .assemble import assemble_pov_montage, assemble_slideshow
 from .audio import GeneratedAudio, generate_music_asset, generate_voiceover_asset
 from .beat_render import POVBeatRender, resume_pov_video, run_pov_beat_loop
-from .captions import burn_caption
+from .captions import burn_caption, caption_renderer_error
 from .loop import run_beat_loop
 from .planner import plan_beats
 from .safety import ensure_assets_allowed
@@ -374,6 +374,8 @@ def _run_campaign(
             raise RuntimeError(
                 "Campaign configuration is incomplete; set " + ", ".join(missing)
             )
+        if renderer_error := caption_renderer_error():
+            raise RuntimeError(f"Campaign configuration is incomplete; {renderer_error}")
 
         # A unique work directory prevents simultaneous jobs from overwriting
         # each other's captioned frames and assembled reel.

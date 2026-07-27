@@ -9,7 +9,6 @@ from app.config import settings
 from app.engine.groq import DEFAULT_CHAT_BASE_URL, chat
 from app.engine.judge import VisionJudge
 from app.engine.planner import plan_beats
-from app.schemas import BeatPlan
 
 
 class GroqChatTests(unittest.TestCase):
@@ -20,7 +19,7 @@ class GroqChatTests(unittest.TestCase):
     def tearDown(self) -> None:
         settings.langsmith_tracing = self.prior_tracing
 
-    def test_strict_planner_schema_requires_nullable_optional_fields(self) -> None:
+    def test_json_object_planner_request_includes_a_bounded_reasoning_budget(self) -> None:
         raw = SimpleNamespace(
             model_dump=lambda: {
                 "model": "openai/gpt-oss-20b",
@@ -34,7 +33,8 @@ class GroqChatTests(unittest.TestCase):
             response = chat(
                 "openai/gpt-oss-20b",
                 prompt="Plan five beats",
-                response_format=BeatPlan,
+                response_format={"type": "json_object"},
+                strict_json_schema=False,
                 api_key="test-groq-key",
                 max_tokens=2048,
                 reasoning_effort="low",
@@ -42,17 +42,41 @@ class GroqChatTests(unittest.TestCase):
             )
 
         payload = client.chat.completions.create.call_args.kwargs
-        schema = payload["response_format"]["json_schema"]
-        beat_schema = schema["schema"]["$defs"]["Beat"]
-        self.assertTrue(schema["strict"])
-        self.assertEqual(set(beat_schema["required"]), {"index", "concept", "caption", "vo"})
-        self.assertFalse(beat_schema["additionalProperties"])
+        self.assertEqual(payload["response_format"], {"type": "json_object"})
         self.assertEqual(payload["max_completion_tokens"], 2048)
         self.assertEqual(payload["reasoning_effort"], "low")
         self.assertEqual(response.raw["_reelproof_provider"], "groq")
         self.assertEqual(response.raw["_reelproof_attempts"], 1)
         openai.assert_called_once()
         self.assertEqual(openai.call_args.kwargs["max_retries"], 0)
+
+    def test_retries_groq_json_validation_failures(self) -> None:
+        validation_error = Exception("Error code: 400 - {'code': 'json_validate_failed'}")
+        validation_error.response = SimpleNamespace(status_code=400, headers={})
+        first_client = MagicMock()
+        first_client.chat.completions.create.side_effect = validation_error
+        second_client = MagicMock()
+        second_client.chat.completions.create.return_value = SimpleNamespace(
+            model_dump=lambda: {
+                "model": "openai/gpt-oss-20b",
+                "choices": [{"message": {"content": "{}"}, "finish_reason": "stop"}],
+                "usage": {},
+            }
+        )
+        with (
+            patch("app.engine.groq.OpenAI", side_effect=[first_client, second_client]) as openai,
+            patch("app.engine.groq.time.sleep") as sleep,
+        ):
+            response = chat(
+                "openai/gpt-oss-20b",
+                prompt="Retry JSON output",
+                api_key="test-groq-key",
+                max_attempts=2,
+            )
+
+        self.assertEqual(response.raw["_reelproof_attempts"], 2)
+        self.assertEqual(openai.call_count, 2)
+        sleep.assert_called_once_with(1.0)
 
     def test_retries_rate_limit_once_without_sdk_retries(self) -> None:
         rate_limited = SimpleNamespace(
@@ -173,7 +197,7 @@ class GroqProviderDispatchTests(unittest.TestCase):
         for name, value in self.prior_values.items():
             setattr(settings, name, value)
 
-    def test_planner_uses_groq_strict_schema_model(self) -> None:
+    def test_planner_uses_groq_json_object_mode_with_local_validation(self) -> None:
         response = SimpleNamespace(
             text=(
                 '{"hook":"h","beats":[{"index":0,"concept":"c","caption":"x"}],'
@@ -189,11 +213,29 @@ class GroqProviderDispatchTests(unittest.TestCase):
 
         self.assertEqual(plan.hook, "h")
         self.assertEqual(groq_chat.call_args.args[0], settings.groq_planner_model)
-        self.assertIs(groq_chat.call_args.kwargs["response_format"], BeatPlan)
-        self.assertTrue(groq_chat.call_args.kwargs["strict_json_schema"])
+        self.assertEqual(groq_chat.call_args.kwargs["response_format"], {"type": "json_object"})
+        self.assertFalse(groq_chat.call_args.kwargs["strict_json_schema"])
         self.assertEqual(groq_chat.call_args.kwargs["api_key"], "test-groq-key")
         self.assertEqual(groq_chat.call_args.kwargs["reasoning_effort"], "low")
         self.assertEqual(groq_chat.call_args.kwargs["max_tokens"], 4096)
+
+    def test_planner_retries_an_invalid_json_object_response(self) -> None:
+        invalid = SimpleNamespace(text='{"hook":"h","beats":[]}', raw={})
+        valid = SimpleNamespace(
+            text=(
+                '{"hook":"h","beats":[{"index":0,"concept":"c","caption":"x"}],'
+                '"suggested_caption":"s","hashtags":[]}'
+            ),
+            raw={"_reelproof_attempts": 1},
+            model="openai/gpt-oss-20b",
+            tokens_in=10,
+            tokens_out=5,
+        )
+        with patch("app.engine.planner.groq_chat", side_effect=[invalid, valid]) as groq_chat:
+            plan = plan_beats("Coffee", beat_count=1)
+
+        self.assertEqual(plan.hook, "h")
+        self.assertEqual(groq_chat.call_count, 2)
 
     def test_judge_uses_groq_vision_model_with_json_object_mode(self) -> None:
         response = SimpleNamespace(

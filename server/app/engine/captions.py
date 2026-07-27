@@ -4,8 +4,27 @@ import subprocess
 import tempfile
 import urllib.request
 from pathlib import Path
+from shutil import which
 
 from ..config import settings
+
+
+def caption_renderer_error() -> str | None:
+    """Return the missing local caption-rendering prerequisite, if any."""
+    ffmpeg = which("ffmpeg")
+    if ffmpeg is None:
+        return "ffmpeg is required for captions and video assembly"
+    try:
+        result = subprocess.run(
+            [ffmpeg, "-hide_banner", "-filters"], capture_output=True, text=True, timeout=15
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return f"could not inspect ffmpeg filters: {exc}"
+    if result.returncode != 0:
+        return "ffmpeg could not list its available filters"
+    if "drawtext" not in result.stdout:
+        return "ffmpeg must include the drawtext filter for captions"
+    return None
 
 
 def caption_drawtext_filter(caption: str) -> str:
