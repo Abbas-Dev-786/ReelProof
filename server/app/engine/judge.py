@@ -15,20 +15,24 @@ from .groq import chat as groq_chat
 _JUDGE_SYSTEM = """\
 You are a strict quality judge for short-form social video frames.
 Score the provided image on a scale of 0.0 to 1.0 across four dimensions,
-then return ONLY valid JSON:
+then return ONLY one valid JSON object with exactly these fields:
 
 {
-  "hook_strength": 0.0-1.0,     // does the visual grab attention instantly?
-  "text_legibility": 0.0-1.0,   // is the lower caption safe-zone clean and high contrast?
-  "visual_artifacts": 0.0-1.0,  // 1.0 = clean, 0.0 = heavy AI artifacts/glitches
-  "on_brand": 0.0-1.0,          // cohesive aesthetic, not random/clashing
-  "overall": 0.0-1.0,           // your holistic score
-  "feedback": "<one sentence: what specifically to improve, or null if passing>"
+  "hook_strength": 0.0,
+  "text_legibility": 0.0,
+  "visual_artifacts": 0.0,
+  "on_brand": 0.0,
+  "overall": 0.0,
+  "feedback": null
 }
 
 Be strict. A score >= 0.7 overall is passing. Flag garbled text, uncanny faces,
 bad composition, or inconsistent style aggressively.
+Every score must be a number from 0.0 to 1.0. `feedback` must be one concise
+string, or null if the image is passing. Do not include Markdown or extra keys.
 """
+
+_GROQ_VISION_RESPONSE_FORMAT = {"type": "json_object"}
 
 
 class JudgeScoresResponse(BaseModel):
@@ -95,16 +99,17 @@ class VisionJudge(Evaluator):
                     base_url=settings.nvidia_chat_base_url or None,
                 )
             else:
-                # Groq currently limits JSON-schema mode to GPT-OSS. Qwen 3.6
-                # supports vision with JSON-object mode; local validation
-                # below is therefore the final trust boundary for scores.
+                # Qwen vision supports Groq's documented JSON Object mode,
+                # but not strict JSON Schema. The parser below remains the
+                # semantic trust boundary, while Groq ensures valid JSON.
                 resp = groq_chat(
                     settings.groq_vision_model,
                     messages=messages,
                     system=_JUDGE_SYSTEM,
                     temperature=0.1,
                     max_tokens=settings.groq_vision_max_tokens,
-                    response_format={"type": "json_object"},
+                    reasoning_effort="none",
+                    response_format=_GROQ_VISION_RESPONSE_FORMAT,
                     strict_json_schema=False,
                     api_key=settings.groq_api_key,
                     base_url=settings.groq_chat_base_url or None,

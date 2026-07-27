@@ -26,9 +26,13 @@ class Settings(BaseSettings):
     groq_chat_retry_backoff_sec: float = 1.0
     groq_chat_max_retry_delay_sec: float = 5.0
     groq_planner_max_tokens: int = 2048
-    # GPT-OSS supports strict JSON schema; Qwen 3.6 receives rendered image
-    # URLs and returns a JSON object validated locally by the judge.
+    # Both GPT-OSS models support Groq's strict JSON-schema mode. The smaller
+    # model is the normal planner; the larger model is a same-contract
+    # failover for transient provider failures.
     groq_planner_model: str = "openai/gpt-oss-20b"
+    groq_planner_fallback_model: str = "openai/gpt-oss-120b"
+    # Qwen 3.6 accepts rendered image URLs and supports JSON Object mode. Its
+    # responses are validated locally by the vision judge.
     groq_vision_model: str = "qwen/qwen3.6-27b"
     groq_vision_max_tokens: int = 512
 

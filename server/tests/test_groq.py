@@ -5,10 +5,13 @@ from contextlib import contextmanager
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
+from genblaze_core.exceptions import ProviderError
+from genblaze_core.models.enums import ProviderErrorCode
+
 from app.config import settings
 from app.engine.groq import DEFAULT_CHAT_BASE_URL, chat
 from app.engine.judge import VisionJudge
-from app.engine.planner import plan_beats
+from app.engine.planner import _GROQ_BEAT_PLAN_RESPONSE_FORMAT, plan_beats
 
 
 class GroqChatTests(unittest.TestCase):
@@ -19,7 +22,7 @@ class GroqChatTests(unittest.TestCase):
     def tearDown(self) -> None:
         settings.langsmith_tracing = self.prior_tracing
 
-    def test_json_object_planner_request_includes_a_bounded_reasoning_budget(self) -> None:
+    def test_strict_planner_request_includes_a_bounded_reasoning_budget(self) -> None:
         raw = SimpleNamespace(
             model_dump=lambda: {
                 "model": "openai/gpt-oss-20b",
@@ -33,16 +36,25 @@ class GroqChatTests(unittest.TestCase):
             response = chat(
                 "openai/gpt-oss-20b",
                 prompt="Plan five beats",
-                response_format={"type": "json_object"},
-                strict_json_schema=False,
                 api_key="test-groq-key",
                 max_tokens=2048,
                 reasoning_effort="low",
+                response_format=_GROQ_BEAT_PLAN_RESPONSE_FORMAT,
+                strict_json_schema=True,
                 max_attempts=1,
             )
 
         payload = client.chat.completions.create.call_args.kwargs
-        self.assertEqual(payload["response_format"], {"type": "json_object"})
+        response_format = payload["response_format"]
+        self.assertEqual(response_format["type"], "json_schema")
+        self.assertTrue(response_format["json_schema"]["strict"])
+        schema = response_format["json_schema"]["schema"]
+        self.assertNotIn("$defs", schema)
+        self.assertFalse(schema["additionalProperties"])
+        beat_schema = schema["properties"]["beats"]["items"]
+        self.assertEqual(beat_schema["required"], ["concept", "caption", "vo"])
+        self.assertFalse(beat_schema["additionalProperties"])
+        self.assertEqual(beat_schema["properties"]["vo"]["type"], ["string", "null"])
         self.assertEqual(payload["max_completion_tokens"], 2048)
         self.assertEqual(payload["reasoning_effort"], "low")
         self.assertEqual(response.raw["_reelproof_provider"], "groq")
@@ -183,6 +195,7 @@ class GroqProviderDispatchTests(unittest.TestCase):
                 "llm_provider",
                 "groq_api_key",
                 "groq_planner_model",
+                "groq_planner_fallback_model",
                 "groq_planner_max_tokens",
                 "groq_vision_model",
                 "langsmith_tracing",
@@ -191,16 +204,17 @@ class GroqProviderDispatchTests(unittest.TestCase):
         settings.llm_provider = "groq"
         settings.groq_api_key = "test-groq-key"
         settings.groq_planner_max_tokens = 2048
+        settings.groq_planner_fallback_model = "openai/gpt-oss-120b"
         settings.langsmith_tracing = False
 
     def tearDown(self) -> None:
         for name, value in self.prior_values.items():
             setattr(settings, name, value)
 
-    def test_planner_uses_groq_json_object_mode_with_local_validation(self) -> None:
+    def test_planner_uses_strict_json_schema_and_records_the_model(self) -> None:
         response = SimpleNamespace(
             text=(
-                '{"hook":"h","beats":[{"index":0,"concept":"c","caption":"x"}],'
+                '{"hook":"h","beats":[{"concept":"c","caption":"x","vo":null}],'
                 '"suggested_caption":"s","hashtags":[]}'
             ),
             model="openai/gpt-oss-20b",
@@ -212,18 +226,27 @@ class GroqProviderDispatchTests(unittest.TestCase):
             plan = plan_beats("Coffee", beat_count=1)
 
         self.assertEqual(plan.hook, "h")
+        self.assertEqual([beat.index for beat in plan.beats], [0])
         self.assertEqual(groq_chat.call_args.args[0], settings.groq_planner_model)
-        self.assertEqual(groq_chat.call_args.kwargs["response_format"], {"type": "json_object"})
-        self.assertFalse(groq_chat.call_args.kwargs["strict_json_schema"])
+        response_format = groq_chat.call_args.kwargs["response_format"]
+        self.assertEqual(response_format["type"], "json_schema")
+        self.assertTrue(response_format["json_schema"]["strict"])
+        self.assertTrue(groq_chat.call_args.kwargs["strict_json_schema"])
         self.assertEqual(groq_chat.call_args.kwargs["api_key"], "test-groq-key")
         self.assertEqual(groq_chat.call_args.kwargs["reasoning_effort"], "low")
         self.assertEqual(groq_chat.call_args.kwargs["max_tokens"], 4096)
 
-    def test_planner_retries_an_invalid_json_object_response(self) -> None:
-        invalid = SimpleNamespace(text='{"hook":"h","beats":[]}', raw={})
+    def test_planner_retries_a_response_that_fails_local_schema_validation(self) -> None:
+        invalid = SimpleNamespace(
+            text=(
+                '{"hook":"h","beats":[{"index":0,"concept":"c","caption":"x","vo":null}],'
+                '"suggested_caption":"s","hashtags":[]}'
+            ),
+            raw={},
+        )
         valid = SimpleNamespace(
             text=(
-                '{"hook":"h","beats":[{"index":0,"concept":"c","caption":"x"}],'
+                '{"hook":"h","beats":[{"concept":"c","caption":"x","vo":null}],'
                 '"suggested_caption":"s","hashtags":[]}'
             ),
             raw={"_reelproof_attempts": 1},
@@ -236,6 +259,40 @@ class GroqProviderDispatchTests(unittest.TestCase):
 
         self.assertEqual(plan.hook, "h")
         self.assertEqual(groq_chat.call_count, 2)
+
+    def test_planner_fails_over_only_to_the_equivalent_strict_model(self) -> None:
+        primary_failure = ProviderError(
+            "Groq primary is temporarily unavailable",
+            error_code=ProviderErrorCode.SERVER_ERROR,
+        )
+        fallback_response = SimpleNamespace(
+            text=(
+                '{"hook":"h","beats":[{"concept":"c","caption":"x","vo":null}],'
+                '"suggested_caption":"s","hashtags":[]}'
+            ),
+            model=settings.groq_planner_fallback_model,
+            raw={"_reelproof_attempts": 1},
+            tokens_in=10,
+            tokens_out=5,
+        )
+
+        with patch(
+            "app.engine.planner.groq_chat", side_effect=[primary_failure, fallback_response]
+        ) as groq_chat:
+            plan = plan_beats("Coffee", beat_count=1)
+
+        self.assertEqual(plan.hook, "h")
+        self.assertEqual(
+            [call.args[0] for call in groq_chat.call_args_list],
+            [settings.groq_planner_model, settings.groq_planner_fallback_model],
+        )
+        self.assertTrue(
+            all(call.kwargs["strict_json_schema"] for call in groq_chat.call_args_list)
+        )
+        self.assertEqual(
+            fallback_response.raw["_reelproof_planner_models_tried"],
+            [settings.groq_planner_model, settings.groq_planner_fallback_model],
+        )
 
     def test_judge_uses_groq_vision_model_with_json_object_mode(self) -> None:
         response = SimpleNamespace(
@@ -264,10 +321,9 @@ class GroqProviderDispatchTests(unittest.TestCase):
 
         self.assertTrue(evaluation.passed)
         self.assertEqual(groq_chat.call_args.args[0], settings.groq_vision_model)
+        self.assertEqual(groq_chat.call_args.kwargs["response_format"], {"type": "json_object"})
         self.assertFalse(groq_chat.call_args.kwargs["strict_json_schema"])
-        self.assertEqual(
-            groq_chat.call_args.kwargs["response_format"], {"type": "json_object"}
-        )
+        self.assertEqual(groq_chat.call_args.kwargs["reasoning_effort"], "none")
         self.assertEqual(groq_chat.call_args.kwargs["api_key"], "test-groq-key")
 
 

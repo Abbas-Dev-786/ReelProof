@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import json
 import time
+from typing import Any
 
 from genblaze_core.exceptions import ProviderError
 from genblaze_core.models.enums import ProviderErrorCode
 from genblaze_nvidia import chat
 from openai import OpenAI
+from pydantic import BaseModel, ConfigDict, ValidationError
 
 from ..config import settings
 from ..observability import finish_trace, trace_operation
@@ -16,32 +18,29 @@ from .safety import ensure_prompt_allowed
 
 _SYSTEM = """\
 You are a faceless short-form content strategist. Given a topic, produce a beat plan for a
-9:16 vertical social video (TikTok/Reels style). Reply ONLY with valid JSON matching this schema:
-
-{
-  "hook": "<one-line attention-grabbing opener>",
-  "beats": [
-    {
-      "index": 0,
-      "concept": "<visual scene description for image generation>",
-      "caption": "<short on-screen text, max 8 words>",
-      "vo": "<optional voiceover line, or null>"
-    }
-  ],
-  "suggested_caption": "<post caption with emojis>",
-  "hashtags": ["tag1", "tag2"]
-}
+9:16 vertical social video (TikTok/Reels style). Return exactly one JSON object matching the
+supplied response schema. Do not include Markdown, code fences, reasoning, or any text before
+or after the JSON.
 
 Rules:
 - concept must describe a clean, photorealistic, faceless scene (no people's faces)
 - caption must be legible on a dark background; use title case; max 8 words
 - 3-8 beats depending on beat_count param
+- return beats in their intended playback order
 - hashtags: 5-10 relevant tags without the # symbol
+- every beat must include `vo`; use null when no voiceover line is appropriate
 """
 
 _DEFAULT_NVIDIA_CHAT_BASE_URL = "https://integrate.api.nvidia.com/v1"
 _MIN_GROQ_PLANNER_COMPLETION_TOKENS = 4096
 _GROQ_PLANNER_LOCAL_VALIDATION_ATTEMPTS = 2
+_GROQ_PLANNER_RETRYABLE_ERRORS = frozenset(
+    {
+        ProviderErrorCode.TIMEOUT,
+        ProviderErrorCode.RATE_LIMIT,
+        ProviderErrorCode.SERVER_ERROR,
+    }
+)
 _RETRYABLE_NVIDIA_ERRORS = frozenset(
     {
         ProviderErrorCode.TIMEOUT,
@@ -49,6 +48,63 @@ _RETRYABLE_NVIDIA_ERRORS = frozenset(
         ProviderErrorCode.SERVER_ERROR,
     }
 )
+
+# Do not pass Pydantic's generated schema directly to Groq strict mode. This
+# intentionally uses only Groq's documented strict-schema subset: closed
+# objects, every property required, and a nullable union for `vo`. Beat
+# indexes are deliberately absent: ordering is model-generated, while stable
+# zero-based identifiers are deterministic application data.
+_GROQ_BEAT_PLAN_RESPONSE_FORMAT: dict[str, Any] = {
+    "type": "json_schema",
+    "json_schema": {
+        "name": "reelproof_beat_plan",
+        "strict": True,
+        "schema": {
+            "type": "object",
+            "properties": {
+                "hook": {"type": "string"},
+                "beats": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "concept": {"type": "string"},
+                            "caption": {"type": "string"},
+                            "vo": {"type": ["string", "null"]},
+                        },
+                        "required": ["concept", "caption", "vo"],
+                        "additionalProperties": False,
+                    },
+                },
+                "suggested_caption": {"type": "string"},
+                "hashtags": {"type": "array", "items": {"type": "string"}},
+            },
+            "required": ["hook", "beats", "suggested_caption", "hashtags"],
+            "additionalProperties": False,
+        },
+    },
+}
+
+
+class _GroqBeatPayload(BaseModel):
+    """The provider-owned portion of one strict Groq beat response."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    concept: str
+    caption: str
+    vo: str | None
+
+
+class _GroqBeatPlanPayload(BaseModel):
+    """Strict wire contract before the server assigns stable beat indexes."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    hook: str
+    beats: list[_GroqBeatPayload]
+    suggested_caption: str
+    hashtags: list[str]
 
 
 def _nvidia_planner_chat(prompt: str):
@@ -101,25 +157,20 @@ def _nvidia_planner_chat(prompt: str):
     raise last_error or RuntimeError("NVIDIA planner failed without an error")
 
 
-def _planner_chat(prompt: str):
-    """Dispatch planning to the explicitly selected LLM provider."""
-    if settings.llm_provider == "nvidia":
-        return _nvidia_planner_chat(prompt)
+def _groq_planner_chat(model: str, prompt: str):
+    """Use Groq's strict structured-output contract for one planner model."""
     return groq_chat(
-        settings.groq_planner_model,
+        model,
         system=_SYSTEM,
         prompt=prompt,
-        temperature=0.8,
+        temperature=0.1,
         # GPT-OSS's completion budget includes reasoning tokens. Use a
         # lightweight reasoning mode and a safe minimum budget for this short,
         # deterministic plan.
         max_tokens=max(settings.groq_planner_max_tokens, _MIN_GROQ_PLANNER_COMPLETION_TOKENS),
         reasoning_effort="low",
-        # Groq's strict-schema endpoint can reject a valid request before the
-        # model returns content. JSON Object mode avoids that provider-side
-        # failure; ``parse_beat_plan`` remains the local schema boundary.
-        response_format={"type": "json_object"},
-        strict_json_schema=False,
+        response_format=_GROQ_BEAT_PLAN_RESPONSE_FORMAT,
+        strict_json_schema=True,
         api_key=settings.groq_api_key,
         base_url=settings.groq_chat_base_url or None,
         timeout=settings.groq_chat_timeout_sec,
@@ -129,7 +180,42 @@ def _planner_chat(prompt: str):
     )
 
 
-def parse_beat_plan(raw: str, beat_count: int) -> BeatPlan:
+def _planner_chat(prompt: str):
+    """Dispatch planning and fail over only between equivalent strict models."""
+    if settings.llm_provider == "nvidia":
+        return _nvidia_planner_chat(prompt)
+
+    models = tuple(
+        dict.fromkeys(
+            model
+            for model in (
+                settings.groq_planner_model,
+                settings.groq_planner_fallback_model,
+            )
+            if model
+        )
+    )
+    last_error: ProviderError | None = None
+    tried_models: list[str] = []
+    for model in models:
+        tried_models.append(model)
+        try:
+            response = _groq_planner_chat(model, prompt)
+        except ProviderError as exc:
+            last_error = exc
+            if exc.error_code not in _GROQ_PLANNER_RETRYABLE_ERRORS:
+                raise
+            continue
+
+        response.raw["_reelproof_planner_models_tried"] = tried_models
+        return response
+
+    raise last_error or RuntimeError("Groq planner failed without an error")
+
+
+def parse_beat_plan(
+    raw: str, beat_count: int, *, assign_indexes_locally: bool = False
+) -> BeatPlan:
     """Validate the model response before it can enter the render pipeline."""
     raw = raw.strip()
     if raw.startswith("```"):
@@ -139,21 +225,28 @@ def parse_beat_plan(raw: str, beat_count: int) -> BeatPlan:
     raw = raw.strip().rstrip("`").strip()
 
     data = json.loads(raw)
-    beats = [Beat(**beat) for beat in data["beats"]]
-    if len(beats) != beat_count:
-        raise ValueError(f"Planner returned {len(beats)} beats; expected exactly {beat_count}")
+    if assign_indexes_locally:
+        payload = _GroqBeatPlanPayload.model_validate(data)
+        plan = BeatPlan(
+            hook=payload.hook,
+            beats=[
+                Beat(index=index, concept=beat.concept, caption=beat.caption, vo=beat.vo)
+                for index, beat in enumerate(payload.beats)
+            ],
+            suggested_caption=payload.suggested_caption,
+            hashtags=payload.hashtags,
+        )
+    else:
+        plan = BeatPlan.model_validate(data)
+    if len(plan.beats) != beat_count:
+        raise ValueError(f"Planner returned {len(plan.beats)} beats; expected exactly {beat_count}")
 
     expected_indexes = list(range(beat_count))
-    actual_indexes = [beat.index for beat in beats]
+    actual_indexes = [beat.index for beat in plan.beats]
     if actual_indexes != expected_indexes:
         raise ValueError(f"Planner beat indexes must be {expected_indexes}; got {actual_indexes}")
 
-    return BeatPlan(
-        hook=data["hook"],
-        beats=beats,
-        suggested_caption=data["suggested_caption"],
-        hashtags=data.get("hashtags", []),
-    )
+    return plan
 
 
 def plan_beats(topic: str, beat_count: int = 5, product_context: str | None = None) -> BeatPlan:
@@ -175,8 +268,12 @@ def plan_beats(topic: str, beat_count: int = 5, product_context: str | None = No
         for attempt in range(1, _GROQ_PLANNER_LOCAL_VALIDATION_ATTEMPTS + 1):
             resp = _planner_chat(user_msg)
             try:
-                plan = parse_beat_plan(resp.text, beat_count)
-            except (KeyError, TypeError, ValueError) as exc:
+                plan = parse_beat_plan(
+                    resp.text,
+                    beat_count,
+                    assign_indexes_locally=settings.llm_provider == "groq",
+                )
+            except (KeyError, TypeError, ValueError, ValidationError) as exc:
                 last_error = exc
                 if attempt == _GROQ_PLANNER_LOCAL_VALIDATION_ATTEMPTS:
                     raise RuntimeError(
@@ -191,6 +288,7 @@ def plan_beats(topic: str, beat_count: int = 5, product_context: str | None = No
                 {
                     "provider": settings.llm_provider,
                     "model": getattr(resp, "model", settings.active_planner_model),
+                    "models_tried": raw_response.get("_reelproof_planner_models_tried"),
                     "response_chars": len(resp.text),
                     "attempts": raw_response.get("_reelproof_attempts", 1),
                     "tokens_in": getattr(resp, "tokens_in", None),

@@ -5,14 +5,15 @@ for job state, GenBlaze for provenance-aware provider pipelines, and Backblaze
 B2 for durable assets.
 
 Campaign planning defaults to Groq's `openai/gpt-oss-20b` with strict
-JSON-schema output, while rendered-frame evaluation uses Groq's multimodal
-`qwen/qwen3.6-27b`. Local Pydantic validation remains
-the final trust boundary for the vision model's JSON-object response. Set
-`GROQ_API_KEY` and `LLM_PROVIDER=groq`. Every request has an
-explicit timeout, retry cap, and `429`/`Retry-After` handling. Set
+JSON-schema output. After its bounded retry budget is exhausted for a transient
+provider failure, it fails over to `openai/gpt-oss-120b` using the same strict
+schema. Rendered-frame evaluation uses Groq's multimodal `qwen/qwen3.6-27b`
+with JSON Object mode; local Pydantic validation remains its final semantic
+trust boundary. Set `GROQ_API_KEY` and `LLM_PROVIDER=groq`. Every request has
+an explicit timeout, retry cap, and `429`/`Retry-After` handling. Set
 `LLM_PROVIDER=nvidia` with `NVIDIA_API_KEY` to use the retained NIM fallback;
-model IDs can be overridden with the provider-specific `*_PLANNER_MODEL` and
-`*_VISION_MODEL` settings.
+model IDs can be overridden with the provider-specific `*_PLANNER_MODEL`,
+`GROQ_PLANNER_FALLBACK_MODEL`, and `*_VISION_MODEL` settings.
 
 ## Local setup
 
