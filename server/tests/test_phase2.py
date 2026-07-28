@@ -12,7 +12,7 @@ from genblaze_core.models.enums import ProviderErrorCode
 from app.config import settings
 from app.engine.assemble import _build_video_filter, assemble_pov_montage, assemble_slideshow
 from app.engine.beat_render import POVBeatRender
-from app.engine.captions import _ffmpeg_escape, _wrap
+from app.engine.captions import _ffmpeg_escape, _wrap, caption_drawtext_filter
 from app.engine.planner import parse_beat_plan, plan_beats
 from app.engine.run_engine import _run_pov_campaign, run_campaign
 from app.schemas import BeatPlan, JobStatus, RenderMode
@@ -164,9 +164,18 @@ class PlannerParsingTests(unittest.TestCase):
 
 class LocalRenderGuardTests(unittest.TestCase):
     def test_caption_text_is_wrapped_and_escaped_for_drawtext(self) -> None:
-        wrapped = _wrap("A caption that is deliberately long enough to wrap cleanly", width=16)
-        self.assertIn("\n", wrapped)
+        caption = "This Is A Very Long Caption That Must Stay Visible"
+        wrapped = _wrap(caption)
+        self.assertGreater(len(wrapped.splitlines()), 1)
+        self.assertTrue(all(len(line) <= 16 for line in wrapped.splitlines()))
+        self.assertTrue(all(len(line) <= 16 for line in _wrap("W" * 45).splitlines()))
         self.assertEqual(_ffmpeg_escape("it's: ready"), r"it\'s\: ready")
+
+        drawtext = caption_drawtext_filter(caption)
+        self.assertIn("\n", drawtext)
+        self.assertNotIn(r"\n", drawtext)
+        self.assertIn(":y=(h-text_h)*0.82", drawtext)
+        self.assertIn(":fix_bounds=1", drawtext)
 
     def test_assemble_requires_at_least_one_image(self) -> None:
         with self.assertRaisesRegex(ValueError, "without captioned images"):

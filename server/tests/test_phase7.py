@@ -162,7 +162,8 @@ class ReliabilityAndSafetyTests(unittest.TestCase):
     def test_shared_caption_filter_escapes_unsafe_ffmpeg_characters(self) -> None:
         filter_text = caption_drawtext_filter("Save 20%: it's time")
         self.assertIn(r"20\%\: it\'s", filter_text)
-        self.assertIn("y=h*0.80", filter_text)
+        self.assertIn("y=(h-text_h)*0.82", filter_text)
+        self.assertIn("fix_bounds=1", filter_text)
 
 
 if __name__ == "__main__":

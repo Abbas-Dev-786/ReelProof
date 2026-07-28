@@ -5,6 +5,7 @@ import tempfile
 import urllib.request
 from pathlib import Path
 from shutil import which
+from textwrap import wrap
 
 from ..config import settings
 
@@ -29,18 +30,19 @@ def caption_renderer_error() -> str | None:
 
 def caption_drawtext_filter(caption: str) -> str:
     """Return the shared, 9:16-safe ffmpeg drawtext filter for a caption."""
-    wrapped = _wrap(caption, width=30)
+    wrapped = _wrap(caption)
     escaped = _ffmpeg_escape(wrapped)
     return (
         f"drawtext=text='{escaped}'"
         ":fontcolor=white"
         ":fontsize=h*0.055"
         ":x=(w-text_w)/2"
-        ":y=h*0.80"
+        ":y=(h-text_h)*0.82"
         ":box=1"
         ":boxcolor=black@0.55"
         ":boxborderw=12"
         ":line_spacing=6"
+        ":fix_bounds=1"
     )
 
 
@@ -84,22 +86,19 @@ def burn_caption(
         Path(src_path).unlink(missing_ok=True)
 
 
-def _wrap(text: str, width: int = 30) -> str:
-    """Naive word-wrap: insert \\n at word boundaries."""
-    words = text.split()
-    lines: list[str] = []
-    current: list[str] = []
-    length = 0
-    for word in words:
-        if length + len(word) + (1 if current else 0) > width:
-            lines.append(" ".join(current))
-            current, length = [word], len(word)
-        else:
-            current.append(word)
-            length += len(word) + (1 if len(current) > 1 else 0)
-    if current:
-        lines.append(" ".join(current))
-    return "\n".join(lines)
+def _wrap(text: str, width: int = 16) -> str:
+    """Wrap captions into bounded lines, including unusually long words."""
+    normalized = " ".join(text.split())
+    if not normalized:
+        return ""
+    return "\n".join(
+        wrap(
+            normalized,
+            width=width,
+            break_long_words=True,
+            break_on_hyphens=False,
+        )
+    )
 
 
 def _ffmpeg_escape(text: str) -> str:
@@ -109,5 +108,4 @@ def _ffmpeg_escape(text: str) -> str:
         .replace("'", r"\'")
         .replace(":", r"\:")
         .replace("%", r"\%")
-        .replace("\n", r"\n")
     )
