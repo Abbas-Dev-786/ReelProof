@@ -50,7 +50,7 @@ export function CampaignComposer({ topic, beatCount, mode, files, stage, error, 
       {error && <Alert variant="destructive"><CircleAlert /><AlertTitle>Something needs attention</AlertTitle><AlertDescription>{error}</AlertDescription></Alert>}
 
       <div className="sticky bottom-0 -mx-5 border-t border-[#e1ded7] bg-[#faf9f6]/95 px-5 pt-5 backdrop-blur sm:-mx-7 sm:px-7">
-        <Button size="lg" className="h-12 w-full bg-[#242438] text-white shadow-none hover:bg-[#373451]" disabled={isWorking}>
+        <Button type="submit" size="lg" className="h-12 w-full bg-[#242438] text-white shadow-none hover:bg-[#373451]" disabled={isWorking}>
           {isWorking ? <LoaderCircle className="animate-spin" /> : <Sparkles />}
           {stage === "uploading" ? "Preparing product images…" : stage === "generating" ? "Building your storyboard…" : "Generate storyboard"}
           {!isWorking && <ChevronRight />}
