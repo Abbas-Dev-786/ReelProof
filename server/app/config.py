@@ -49,7 +49,19 @@ class Settings(BaseSettings):
     # Specialist NIM models: text planning and multimodal visual evaluation.
     nvidia_planner_model: str = "z-ai/glm-5.2"
     nvidia_vision_model: str = "qwen/qwen3.5-397b-a17b"
+
+    # Image generation. GMI remains the default for backwards compatibility;
+    # set IMAGE_PROVIDER=cloudflare to use Cloudflare Workers AI for stills.
+    image_provider: Literal["gmi", "cloudflare"] = "gmi"
     gmi_api_key: str = ""
+    cloudflare_account_id: str = ""
+    cloudflare_api_token: str = ""
+    cloudflare_image_model: str = "@cf/bytedance/stable-diffusion-xl-lightning"
+    cloudflare_product_image_model: str = "@cf/bytedance/stable-diffusion-xl-lightning"
+    cloudflare_image_width: int = 768
+    cloudflare_image_height: int = 1344
+    cloudflare_image_num_steps: int = 8
+    cloudflare_image_guidance: float = 7.5
     elevenlabs_api_key: str = ""
     stability_api_key: str = ""
     voiceover_enabled: bool = False
@@ -161,6 +173,24 @@ class Settings(BaseSettings):
         )
 
     @property
+    def image_provider_key_env_names(self) -> list[str]:
+        if self.image_provider == "cloudflare":
+            return ["CLOUDFLARE_ACCOUNT_ID", "CLOUDFLARE_API_TOKEN"]
+        return ["GMI_API_KEY"]
+
+    @property
+    def active_image_model(self) -> str:
+        if self.image_provider == "cloudflare":
+            return self.cloudflare_image_model
+        return self.gmi_image_model
+
+    @property
+    def active_product_image_model(self) -> str:
+        if self.image_provider == "cloudflare":
+            return self.cloudflare_product_image_model
+        return self.gmi_product_image_model
+
+    @property
     def active_llm_api_key(self) -> str:
         return self.groq_api_key if self.llm_provider == "groq" else self.nvidia_api_key
 
@@ -186,11 +216,19 @@ class Settings(BaseSettings):
         }
         return [name for name, value in required.items() if not value]
 
-    def missing_campaign_settings(self) -> list[str]:
+    def missing_image_provider_settings(self) -> list[str]:
+        if self.image_provider == "cloudflare":
+            required = {
+                "CLOUDFLARE_ACCOUNT_ID": self.cloudflare_account_id,
+                "CLOUDFLARE_API_TOKEN": self.cloudflare_api_token,
+            }
+            return [name for name, value in required.items() if not value]
+        return ["GMI_API_KEY"] if not self.gmi_api_key else []
+
+    def missing_campaign_settings(self, mode: object | None = None) -> list[str]:
         """Return settings required before a browser-playable campaign starts."""
         required = {
             self.active_llm_key_env_name: self.active_llm_api_key,
-            "GMI_API_KEY": self.gmi_api_key,
             "STABILITY_API_KEY": self.stability_api_key,
             "B2_KEY_ID": self.b2_key_id,
             "B2_APP_KEY": self.b2_app_key,
@@ -198,9 +236,13 @@ class Settings(BaseSettings):
             # base (or a future presigning implementation), private B2 URLs 403.
             "B2_PUBLIC_URL_BASE": self.b2_public_url_base,
         }
+        if getattr(mode, "value", mode) == "pov":
+            required["GMI_API_KEY"] = self.gmi_api_key
         if self.voiceover_enabled:
             required["ELEVENLABS_API_KEY"] = self.elevenlabs_api_key
-        return [name for name, value in required.items() if not value]
+        missing = [name for name, value in required.items() if not value]
+        missing.extend(self.missing_image_provider_settings())
+        return list(dict.fromkeys(missing))
 
 
 settings = Settings()

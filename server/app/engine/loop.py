@@ -5,14 +5,20 @@ from dataclasses import dataclass
 from typing import Any
 
 from genblaze_core import AgentContext, AgentLoop, Asset, Modality, ObjectStorageSink, Pipeline
-from genblaze_core.providers import per_unit
-from genblaze_gmicloud import GMICloudImageProvider
+from genblaze_core.providers.base import BaseProvider
 
 from ..config import settings
 from ..observability import langsmith_tracer
 from ..schemas import Beat
+from .images import (
+    image_fallback_models,
+    image_generation_params,
+    image_model,
+    image_provider,
+    require_image_provider_credentials,
+)
 from .judge import VisionJudge
-from .safety import image_retry_policy, moderation_hook
+from .safety import moderation_hook
 
 
 @dataclass(frozen=True)
@@ -24,18 +30,8 @@ class BeatLoopResult:
     total_cost_usd: float
 
 
-def _image_provider() -> GMICloudImageProvider:
-    provider = GMICloudImageProvider(
-        api_key=settings.gmi_api_key or None, retry_policy=image_retry_policy()
-    )
-    provider.models.register_pricing(
-        settings.gmi_image_model, per_unit(settings.gmi_image_unit_cost_usd)
-    )
-    provider.models.register_pricing(
-        settings.gmi_product_image_model,
-        per_unit(settings.gmi_product_image_unit_cost_usd),
-    )
-    return provider
+def _image_provider() -> BaseProvider:
+    return image_provider()
 
 
 def refine_prompt(concept: str, feedback: str | None, style_suffix: str = "") -> str:
@@ -61,8 +57,7 @@ def run_beat_loop(
     Stores every attempt through ``sink`` so AgentLoop's automatic
     parent_run_id links are available to the provenance API.
     """
-    if not settings.gmi_api_key:
-        raise RuntimeError("GMI_API_KEY is required to run the self-healing image loop")
+    require_image_provider_credentials("run the self-healing image loop")
 
     product_input = list(product_assets or [])[:1]
 
@@ -73,21 +68,17 @@ def run_beat_loop(
             style_suffix,
         )
 
-        fallback_models = (
-            settings.gmi_product_image_fallback_model_list
-            if product_input
-            else settings.gmi_image_fallback_model_list
-        )
+        fallback_models = image_fallback_models(has_product_input=bool(product_input))
         return Pipeline(
             f"beat-{beat.index}-iter-{ctx.iteration}", moderation=moderation_hook()
         ).step(
             _image_provider(),
-            model=settings.gmi_product_image_model if product_input else settings.gmi_image_model,
+            model=image_model(has_product_input=bool(product_input)),
             prompt=prompt,
             modality=Modality.IMAGE,
-            aspect_ratio="9:16",
             external_inputs=product_input or None,
             fallback_models=fallback_models,
+            **image_generation_params(),
         )
 
     loop = AgentLoop(
@@ -97,9 +88,7 @@ def run_beat_loop(
         tracer=langsmith_tracer(),
     )
 
-    agent_result = loop.run(
-        sink=sink, timeout=120, max_retries=settings.image_step_retries
-    )
+    agent_result = loop.run(sink=sink, timeout=120, max_retries=settings.image_step_retries)
 
     # The last result is either a pass or the best available bounded attempt.
     last_iter = agent_result.iterations[-1]

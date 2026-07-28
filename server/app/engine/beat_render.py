@@ -7,27 +7,25 @@ from typing import Any
 from genblaze_core import AgentContext, AgentLoop, Asset, Modality, Pipeline
 from genblaze_core.models.step import Step
 from genblaze_core.providers import per_unit
-from genblaze_gmicloud import GMICloudImageProvider, GMICloudVideoProvider
+from genblaze_core.providers.base import BaseProvider
+from genblaze_gmicloud import GMICloudVideoProvider
 
 from ..config import settings
 from ..observability import ingest_with_trace, langsmith_tracer
 from ..schemas import Beat
+from .images import (
+    image_fallback_models,
+    image_generation_params,
+    image_model,
+    image_provider,
+    require_image_provider_credentials,
+)
 from .judge import VisionJudge
-from .safety import ensure_assets_allowed, image_retry_policy, moderation_hook, video_retry_policy
+from .safety import ensure_assets_allowed, moderation_hook, video_retry_policy
 
 
-def _image_provider() -> GMICloudImageProvider:
-    provider = GMICloudImageProvider(
-        api_key=settings.gmi_api_key or None, retry_policy=image_retry_policy()
-    )
-    provider.models.register_pricing(
-        settings.gmi_image_model, per_unit(settings.gmi_image_unit_cost_usd)
-    )
-    provider.models.register_pricing(
-        settings.gmi_product_image_model,
-        per_unit(settings.gmi_product_image_unit_cost_usd),
-    )
-    return provider
+def _image_provider() -> BaseProvider:
+    return image_provider()
 
 
 def _video_provider() -> GMICloudVideoProvider:
@@ -63,8 +61,7 @@ def render_beat_image(
     product_assets: Sequence[Asset] | None = None,
 ) -> str:
     """Generate one still image for a beat. Returns the asset URL."""
-    if not settings.gmi_api_key:
-        raise RuntimeError("GMI_API_KEY is required to render slideshow beats")
+    require_image_provider_credentials("render slideshow beats")
 
     prompt = beat.concept
     product_input = list(product_assets or [])[:1]
@@ -77,11 +74,7 @@ def render_beat_image(
         prompt = f"{prompt}. {style_suffix}"
 
     provider = _image_provider()
-    fallback_models = (
-        settings.gmi_product_image_fallback_model_list
-        if product_input
-        else settings.gmi_image_fallback_model_list
-    )
+    fallback_models = image_fallback_models(has_product_input=bool(product_input))
 
     result = (
         Pipeline(
@@ -89,12 +82,12 @@ def render_beat_image(
         )
         .step(
             provider,
-            model=settings.gmi_product_image_model if product_input else settings.gmi_image_model,
+            model=image_model(has_product_input=bool(product_input)),
             prompt=prompt,
             modality=Modality.IMAGE,
-            aspect_ratio="9:16",
             external_inputs=product_input or None,
             fallback_models=fallback_models,
+            **image_generation_params(),
         )
         .run(timeout=120, max_retries=settings.image_step_retries)
     )
@@ -146,6 +139,7 @@ async def render_pov_beat(
     """
     if not settings.gmi_api_key:
         raise RuntimeError("GMI_API_KEY is required to render POV beats")
+    require_image_provider_credentials("render POV beat images")
 
     product_input = list(product_assets or [])[:1]
     image_asset: Asset | None = None
@@ -187,17 +181,13 @@ async def render_pov_beat(
         )
         .step(
             _image_provider(),
-            model=settings.gmi_product_image_model if product_input else settings.gmi_image_model,
+            model=image_model(has_product_input=bool(product_input)),
             prompt=_pov_image_prompt(beat, style_suffix, bool(product_input)),
             modality=Modality.IMAGE,
-            aspect_ratio="9:16",
             external_inputs=product_input or None,
-            fallback_models=(
-                settings.gmi_product_image_fallback_model_list
-                if product_input
-                else settings.gmi_image_fallback_model_list
-            ),
+            fallback_models=image_fallback_models(has_product_input=bool(product_input)),
             metadata={"job_id": job_id, "beat_index": beat.index, "render_mode": "pov"},
+            **image_generation_params(),
         )
         .step(
             _video_provider(),
@@ -221,7 +211,9 @@ async def render_pov_beat(
 
     steps = result.run.steps
     if len(steps) != 2 or not steps[0].assets or not steps[1].assets:
-        raise RuntimeError(f"Beat {beat.index}: image-to-video generation returned incomplete assets")
+        raise RuntimeError(
+            f"Beat {beat.index}: image-to-video generation returned incomplete assets"
+        )
 
     if video_step_id is None:
         raise RuntimeError(f"Beat {beat.index}: video generation was not checkpointed")
@@ -250,6 +242,7 @@ async def run_pov_beat_loop(
     """Run image-to-video generation through the same bounded quality loop as stills."""
     if not settings.gmi_api_key:
         raise RuntimeError("GMI_API_KEY is required to render POV beats")
+    require_image_provider_credentials("render POV beat images")
 
     product_input = list(product_assets or [])[:1]
     latest_image_asset: Asset | None = None
@@ -288,17 +281,13 @@ async def run_pov_beat_loop(
             )
             .step(
                 _image_provider(),
-                model=settings.gmi_product_image_model if product_input else settings.gmi_image_model,
+                model=image_model(has_product_input=bool(product_input)),
                 prompt=_pov_image_prompt(beat, style_suffix, bool(product_input)),
                 modality=Modality.IMAGE,
-                aspect_ratio="9:16",
                 external_inputs=product_input or None,
-                fallback_models=(
-                    settings.gmi_product_image_fallback_model_list
-                    if product_input
-                    else settings.gmi_image_fallback_model_list
-                ),
+                fallback_models=image_fallback_models(has_product_input=bool(product_input)),
                 metadata={"job_id": job_id, "beat_index": beat.index, "render_mode": "pov"},
+                **image_generation_params(),
             )
             .step(
                 _video_provider(),
@@ -363,9 +352,7 @@ async def run_pov_beat_loop(
     )
 
 
-async def resume_pov_video(
-    checkpoint: dict[str, Any], *, sink: Any | None = None
-) -> POVBeatRender:
+async def resume_pov_video(checkpoint: dict[str, Any], *, sink: Any | None = None) -> POVBeatRender:
     """Resume polling a submitted POV video request without creating a second render."""
     payload = checkpoint["checkpoint"]
     if payload.get("kind") != "pov-video":

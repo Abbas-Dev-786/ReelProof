@@ -80,11 +80,15 @@ python -m uvicorn main:app --host 127.0.0.1 --port 8000
 python .\scripts\pregenerate_showcases.py
 ```
 
-The API now uses bounded retry policies for images, audio, and video; image and
-video fallback model lists are configurable with `GMI_IMAGE_FALLBACK_MODELS`,
-`GMI_PRODUCT_IMAGE_FALLBACK_MODELS`, and `POV_VIDEO_FALLBACK_MODELS`. A shared
-GenBlaze moderation hook screens prompts and asset outputs, while upload assets
-are screened before they are ingested into B2.
+The API now uses bounded retry policies for images, audio, and video. Set
+`IMAGE_PROVIDER=cloudflare` to generate still images through Cloudflare Workers
+AI instead of GMI; provide `CLOUDFLARE_ACCOUNT_ID` and `CLOUDFLARE_API_TOKEN`.
+The default Cloudflare still model is
+`@cf/bytedance/stable-diffusion-xl-lightning` with vertical `768x1344`
+dimensions. GMI image fallback lists are still available when
+`IMAGE_PROVIDER=gmi`, and `POV_VIDEO_FALLBACK_MODELS` still controls the GMI
+video step. A shared GenBlaze moderation hook screens prompts and asset outputs,
+while upload assets are screened before they are ingested into B2.
 
 Optional narration is controlled by `VOICEOVER_ENABLED`. When enabled, the
 planner's non-empty `vo` beat lines are combined into one ElevenLabs narration

@@ -155,9 +155,7 @@ async def _render_or_resume_pov_beat(
 
     checkpoint_step_ids: list[str] = []
 
-    def checkpoint_video(
-        step_id: str, prediction_id: Any, payload: dict[str, Any]
-    ) -> None:
+    def checkpoint_video(step_id: str, prediction_id: Any, payload: dict[str, Any]) -> None:
         checkpoint_step_ids.append(step_id)
         save_checkpoint(job_id, step_id, prediction_id, payload)
         emit("beat.checkpointed", {"beat_index": beat.index, "step_id": step_id})
@@ -377,10 +375,8 @@ def _run_campaign(
 
     try:
         work_dir = require_media_workspace(work_dir)
-        if missing := settings.missing_campaign_settings():
-            raise RuntimeError(
-                "Campaign configuration is incomplete; set " + ", ".join(missing)
-            )
+        if missing := settings.missing_campaign_settings(mode):
+            raise RuntimeError("Campaign configuration is incomplete; set " + ", ".join(missing))
         if renderer_error := caption_renderer_error():
             raise RuntimeError(f"Campaign configuration is incomplete; {renderer_error}")
 
