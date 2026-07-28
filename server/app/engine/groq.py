@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import copy
+import re
+import threading
 import time
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
@@ -24,6 +26,59 @@ _RETRYABLE_ERRORS = frozenset(
         ProviderErrorCode.SERVER_ERROR,
     }
 )
+_GROQ_RETRY_AFTER_PATTERNS = (
+    re.compile(r"try again in\s+([0-9]+(?:\.[0-9]+)?)\s*s", re.IGNORECASE),
+    re.compile(r"retry after\s+([0-9]+(?:\.[0-9]+)?)\s*s", re.IGNORECASE),
+)
+_RETRY_DELAY_BUFFER_SEC = 0.5
+
+
+class _GroqTokenPacer:
+    """Small in-process per-model TPM pacer.
+
+    This does not replace provider-side limits. It spaces repeated local calls
+    so one worker does not knowingly submit more estimated tokens than the
+    account's TPM window can absorb.
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._next_allowed_at: dict[str, float] = {}
+
+    def reset(self) -> None:
+        with self._lock:
+            self._next_allowed_at.clear()
+
+    def reserve(
+        self,
+        key: str,
+        *,
+        estimated_tokens: int,
+        tokens_per_minute: int,
+        safety_factor: float,
+    ) -> float:
+        if estimated_tokens <= 0 or tokens_per_minute <= 0:
+            return 0.0
+        effective_tpm = max(1.0, float(tokens_per_minute) * max(0.1, min(safety_factor, 1.0)))
+        interval = float(estimated_tokens) / (effective_tpm / 60.0)
+        with self._lock:
+            now = time.monotonic()
+            next_allowed = self._next_allowed_at.get(key, now)
+            delay = max(0.0, next_allowed - now)
+            self._next_allowed_at[key] = max(now, next_allowed) + interval
+            return delay
+
+    def cooldown(self, key: str, delay: float | None) -> None:
+        if delay is None or delay <= 0:
+            return
+        with self._lock:
+            self._next_allowed_at[key] = max(
+                self._next_allowed_at.get(key, 0.0),
+                time.monotonic() + delay,
+            )
+
+
+_groq_rate_limiter = _GroqTokenPacer()
 
 
 def _api_base_url(base_url: str | None) -> str:
@@ -61,7 +116,8 @@ def _normalize_messages(
 ) -> list[dict[str, Any]]:
     if messages is None and prompt is None:
         raise ProviderError(
-            "Groq chat requires either messages or prompt", error_code=ProviderErrorCode.INVALID_INPUT
+            "Groq chat requires either messages or prompt",
+            error_code=ProviderErrorCode.INVALID_INPUT,
         )
 
     normalized: list[dict[str, Any]] = []
@@ -105,7 +161,9 @@ def _make_schema_strict(value: Any) -> Any:
     return strict_value
 
 
-def _response_format(response_format: dict[str, Any] | type | None, *, strict: bool) -> dict[str, Any] | None:
+def _response_format(
+    response_format: dict[str, Any] | type | None, *, strict: bool
+) -> dict[str, Any] | None:
     if response_format is None:
         return None
     envelope = copy.deepcopy(coerce_response_format(response_format))
@@ -143,6 +201,20 @@ def _error_code(exc: Exception) -> ProviderErrorCode:
     if "connection" in message or "temporarily unavailable" in message:
         return ProviderErrorCode.SERVER_ERROR
     return ProviderErrorCode.UNKNOWN
+
+
+def _retry_after_from_groq_error(exc: Exception) -> float | None:
+    """Extract Groq cooldown from headers or JSON-ish error messages."""
+    header_delay = retry_after_from_response(exc)
+    if header_delay is not None:
+        return float(header_delay) + _RETRY_DELAY_BUFFER_SEC
+
+    message = str(exc)
+    for pattern in _GROQ_RETRY_AFTER_PATTERNS:
+        match = pattern.search(message)
+        if match:
+            return float(match.group(1)) + _RETRY_DELAY_BUFFER_SEC
+    return None
 
 
 def _parse_response(model: str, raw: Any) -> ChatResponse:
@@ -191,6 +263,10 @@ def chat(
     max_attempts: int = 2,
     retry_backoff_sec: float = 1.0,
     max_retry_delay_sec: float = 5.0,
+    rate_limit_key: str | None = None,
+    rate_limit_tpm: int | None = None,
+    rate_limit_estimated_tokens: int | None = None,
+    rate_limit_safety_factor: float = 0.9,
 ) -> ChatResponse:
     """Call Groq without hidden SDK retries and record every physical attempt."""
     if not api_key:
@@ -214,7 +290,18 @@ def chat(
     attempts = max(1, max_attempts)
     timeout = max(1.0, timeout)
     last_error: ProviderError | None = None
+    limiter_key = rate_limit_key or model
     for attempt in range(1, attempts + 1):
+        if rate_limit_tpm and rate_limit_estimated_tokens:
+            delay = _groq_rate_limiter.reserve(
+                limiter_key,
+                estimated_tokens=rate_limit_estimated_tokens,
+                tokens_per_minute=rate_limit_tpm,
+                safety_factor=rate_limit_safety_factor,
+            )
+            if delay > 0:
+                time.sleep(delay)
+
         with trace_operation(
             "reelproof.groq.chat",
             inputs={"model": model, "messages": _trace_safe_value(wire_messages)},
@@ -250,17 +337,17 @@ def chat(
                 last_error = ProviderError(
                     f"Groq chat failed: {exc}",
                     error_code=_error_code(exc),
-                    retry_after=retry_after_from_response(exc),
+                    retry_after=_retry_after_from_groq_error(exc),
                     attempts=attempt,
                 )
+                if last_error.error_code is ProviderErrorCode.RATE_LIMIT:
+                    _groq_rate_limiter.cooldown(limiter_key, last_error.retry_after)
             finally:
                 client.close()
 
         if last_error.error_code not in _RETRYABLE_ERRORS or attempt == attempts:
             raise last_error
-        delay = min(
-            max(retry_backoff_sec, last_error.retry_after or 0.0), max_retry_delay_sec
-        )
+        delay = min(max(retry_backoff_sec, last_error.retry_after or 0.0), max_retry_delay_sec)
         time.sleep(delay)
 
     raise last_error or RuntimeError("Groq chat failed without an error")

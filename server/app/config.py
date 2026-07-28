@@ -34,7 +34,10 @@ class Settings(BaseSettings):
     # Qwen 3.6 accepts rendered image URLs and supports JSON Object mode. Its
     # responses are validated locally by the vision judge.
     groq_vision_model: str = "qwen/qwen3.6-27b"
-    groq_vision_max_tokens: int = 512
+    groq_vision_max_tokens: int = 256
+    groq_vision_rate_limit_tpm: int = 8000
+    groq_vision_rate_limit_estimated_tokens: int = 2500
+    groq_vision_rate_limit_safety_factor: float = 0.9
 
     # NVIDIA NIM remains available as an explicit fallback through GenBlaze.
     nvidia_api_key: str = ""

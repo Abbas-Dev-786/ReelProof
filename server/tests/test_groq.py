@@ -9,7 +9,7 @@ from genblaze_core.exceptions import ProviderError
 from genblaze_core.models.enums import ProviderErrorCode
 
 from app.config import settings
-from app.engine.groq import DEFAULT_CHAT_BASE_URL, chat
+from app.engine.groq import DEFAULT_CHAT_BASE_URL, _groq_rate_limiter, chat
 from app.engine.judge import VisionJudge
 from app.engine.planner import _GROQ_BEAT_PLAN_RESPONSE_FORMAT, plan_beats
 
@@ -21,6 +21,41 @@ class GroqChatTests(unittest.TestCase):
 
     def tearDown(self) -> None:
         settings.langsmith_tracing = self.prior_tracing
+        _groq_rate_limiter.reset()
+
+    def test_token_pacer_spaces_repeated_model_calls(self) -> None:
+        _groq_rate_limiter.reset()
+
+        with patch("app.engine.groq.time.monotonic", side_effect=[100.0, 105.0]):
+            first_delay = _groq_rate_limiter.reserve(
+                "vision:qwen",
+                estimated_tokens=2500,
+                tokens_per_minute=8000,
+                safety_factor=0.9,
+            )
+            second_delay = _groq_rate_limiter.reserve(
+                "vision:qwen",
+                estimated_tokens=2500,
+                tokens_per_minute=8000,
+                safety_factor=0.9,
+            )
+
+        self.assertEqual(first_delay, 0.0)
+        self.assertAlmostEqual(second_delay, 15.8333333333)
+
+    def test_token_pacer_honors_shared_provider_cooldown(self) -> None:
+        _groq_rate_limiter.reset()
+
+        with patch("app.engine.groq.time.monotonic", side_effect=[100.0, 101.0]):
+            _groq_rate_limiter.cooldown("vision:qwen", 3.0)
+            delay = _groq_rate_limiter.reserve(
+                "vision:qwen",
+                estimated_tokens=1,
+                tokens_per_minute=60,
+                safety_factor=1.0,
+            )
+
+        self.assertEqual(delay, 2.0)
 
     def test_strict_planner_request_includes_a_bounded_reasoning_budget(self) -> None:
         raw = SimpleNamespace(
@@ -121,7 +156,42 @@ class GroqChatTests(unittest.TestCase):
         self.assertEqual(response.raw["_reelproof_attempts"], 2)
         self.assertEqual(openai.call_count, 2)
         self.assertTrue(all(call.kwargs["max_retries"] == 0 for call in openai.call_args_list))
-        sleep.assert_called_once_with(2.0)
+        sleep.assert_called_once_with(2.5)
+
+    def test_retries_rate_limit_using_groq_body_cooldown(self) -> None:
+        first_client = MagicMock()
+        rate_limit_error = Exception(
+            "Error code: 429 - {'error': {'message': 'Rate limit reached for model "
+            "qwen/qwen3.6-27b on tokens per minute. Please try again in 1.74s.', "
+            "'type': 'tokens', 'code': 'rate_limit_exceeded'}}"
+        )
+        rate_limit_error.response = SimpleNamespace(status_code=429, headers={})
+        first_client.chat.completions.create.side_effect = rate_limit_error
+        second_client = MagicMock()
+        second_client.chat.completions.create.return_value = SimpleNamespace(
+            model_dump=lambda: {
+                "model": "qwen/qwen3.6-27b",
+                "choices": [{"message": {"content": "{}"}, "finish_reason": "stop"}],
+                "usage": {},
+            }
+        )
+
+        with (
+            patch("app.engine.groq.OpenAI", side_effect=[first_client, second_client]) as openai,
+            patch("app.engine.groq.time.sleep") as sleep,
+        ):
+            response = chat(
+                "qwen/qwen3.6-27b",
+                prompt="Retry me",
+                api_key="test-groq-key",
+                max_attempts=2,
+                retry_backoff_sec=1,
+                max_retry_delay_sec=5,
+            )
+
+        self.assertEqual(response.raw["_reelproof_attempts"], 2)
+        self.assertEqual(openai.call_count, 2)
+        sleep.assert_called_once_with(2.24)
 
     def test_accepts_a_full_chat_completions_endpoint_as_the_base_url(self) -> None:
         client = MagicMock()
@@ -198,6 +268,10 @@ class GroqProviderDispatchTests(unittest.TestCase):
                 "groq_planner_fallback_model",
                 "groq_planner_max_tokens",
                 "groq_vision_model",
+                "groq_vision_max_tokens",
+                "groq_vision_rate_limit_tpm",
+                "groq_vision_rate_limit_estimated_tokens",
+                "groq_vision_rate_limit_safety_factor",
                 "langsmith_tracing",
             )
         }
@@ -205,6 +279,10 @@ class GroqProviderDispatchTests(unittest.TestCase):
         settings.groq_api_key = "test-groq-key"
         settings.groq_planner_max_tokens = 2048
         settings.groq_planner_fallback_model = "openai/gpt-oss-120b"
+        settings.groq_vision_max_tokens = 256
+        settings.groq_vision_rate_limit_tpm = 8000
+        settings.groq_vision_rate_limit_estimated_tokens = 2500
+        settings.groq_vision_rate_limit_safety_factor = 0.9
         settings.langsmith_tracing = False
 
     def tearDown(self) -> None:
@@ -286,9 +364,7 @@ class GroqProviderDispatchTests(unittest.TestCase):
             [call.args[0] for call in groq_chat.call_args_list],
             [settings.groq_planner_model, settings.groq_planner_fallback_model],
         )
-        self.assertTrue(
-            all(call.kwargs["strict_json_schema"] for call in groq_chat.call_args_list)
-        )
+        self.assertTrue(all(call.kwargs["strict_json_schema"] for call in groq_chat.call_args_list))
         self.assertEqual(
             fallback_response.raw["_reelproof_planner_models_tried"],
             [settings.groq_planner_model, settings.groq_planner_fallback_model],
@@ -307,7 +383,9 @@ class GroqProviderDispatchTests(unittest.TestCase):
         )
         result = SimpleNamespace(
             run=SimpleNamespace(
-                steps=[SimpleNamespace(assets=[SimpleNamespace(url="https://example.test/frame.png")])]
+                steps=[
+                    SimpleNamespace(assets=[SimpleNamespace(url="https://example.test/frame.png")])
+                ]
             )
         )
         with (
@@ -324,6 +402,11 @@ class GroqProviderDispatchTests(unittest.TestCase):
         self.assertEqual(groq_chat.call_args.kwargs["response_format"], {"type": "json_object"})
         self.assertFalse(groq_chat.call_args.kwargs["strict_json_schema"])
         self.assertEqual(groq_chat.call_args.kwargs["reasoning_effort"], "none")
+        self.assertEqual(groq_chat.call_args.kwargs["max_tokens"], 256)
+        self.assertEqual(groq_chat.call_args.kwargs["rate_limit_key"], "vision:qwen/qwen3.6-27b")
+        self.assertEqual(groq_chat.call_args.kwargs["rate_limit_tpm"], 8000)
+        self.assertEqual(groq_chat.call_args.kwargs["rate_limit_estimated_tokens"], 2500)
+        self.assertEqual(groq_chat.call_args.kwargs["rate_limit_safety_factor"], 0.9)
         self.assertEqual(groq_chat.call_args.kwargs["api_key"], "test-groq-key")
 
 

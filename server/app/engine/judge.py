@@ -117,6 +117,10 @@ class VisionJudge(Evaluator):
                     max_attempts=settings.groq_chat_max_attempts,
                     retry_backoff_sec=settings.groq_chat_retry_backoff_sec,
                     max_retry_delay_sec=settings.groq_chat_max_retry_delay_sec,
+                    rate_limit_key=f"vision:{settings.groq_vision_model}",
+                    rate_limit_tpm=settings.groq_vision_rate_limit_tpm,
+                    rate_limit_estimated_tokens=settings.groq_vision_rate_limit_estimated_tokens,
+                    rate_limit_safety_factor=settings.groq_vision_rate_limit_safety_factor,
                 )
             raw_response = getattr(resp, "raw", {})
             finish_trace(
