@@ -4,16 +4,17 @@ import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 from genblaze_core.exceptions import ProviderError
 from genblaze_core.models.enums import ProviderErrorCode
 
 from app.config import settings
 from app.engine.assemble import _build_video_filter, assemble_pov_montage, assemble_slideshow
+from app.engine.beat_render import POVBeatRender
 from app.engine.captions import _ffmpeg_escape, _wrap
 from app.engine.planner import parse_beat_plan, plan_beats
-from app.engine.run_engine import run_campaign
+from app.engine.run_engine import _run_pov_campaign, run_campaign
 from app.schemas import BeatPlan, JobStatus, RenderMode
 
 
@@ -111,6 +112,39 @@ class PlannerParsingTests(unittest.TestCase):
         self.assertEqual(plan.hook, "A better morning routine")
         self.assertEqual([beat.index for beat in plan.beats], [0, 1])
 
+    def test_pov_planner_requires_voiceover_lines(self) -> None:
+        prior_key = settings.groq_api_key
+        prior_provider = settings.llm_provider
+        settings.groq_api_key = "test-groq-key"
+        settings.llm_provider = "groq"
+        try:
+            with patch(
+                "app.engine.planner._planner_chat",
+                side_effect=[
+                    SimpleNamespace(
+                        text=(
+                            '{"hook":"h","beats":[{"concept":"c","caption":"x","vo":null}],'
+                            '"suggested_caption":"s","hashtags":[]}'
+                        ),
+                        raw={},
+                    ),
+                    SimpleNamespace(
+                        text=(
+                            '{"hook":"h","beats":[{"concept":"c","caption":"x","vo":"Say this."}],'
+                            '"suggested_caption":"s","hashtags":[]}'
+                        ),
+                        raw={},
+                    ),
+                ],
+            ) as planner_chat:
+                plan = plan_beats("Coffee", beat_count=1, voiceover_required=True)
+        finally:
+            settings.groq_api_key = prior_key
+            settings.llm_provider = prior_provider
+
+        self.assertEqual(plan.beats[0].vo, "Say this.")
+        self.assertEqual(planner_chat.call_count, 2)
+
     def test_rejects_wrong_beat_count(self) -> None:
         with self.assertRaisesRegex(ValueError, "expected exactly 2"):
             parse_beat_plan(
@@ -176,6 +210,7 @@ class LocalRenderGuardTests(unittest.TestCase):
             "nvidia_api_key",
             "gmi_api_key",
             "stability_api_key",
+            "elevenlabs_api_key",
             "b2_key_id",
             "b2_app_key",
             "b2_public_url_base",
@@ -215,7 +250,7 @@ class LocalRenderGuardTests(unittest.TestCase):
         self.assertTrue(work_dir.is_relative_to(Path(tempfile.gettempdir()).resolve()))
         self.assertFalse(work_dir.exists())
 
-    def test_slideshow_can_skip_generated_audio(self) -> None:
+    def test_slideshow_can_skip_background_music(self) -> None:
         plan = BeatPlan(
             hook="A quiet coffee ritual",
             beats=[
@@ -281,12 +316,12 @@ class LocalRenderGuardTests(unittest.TestCase):
                 ),
             ):
                 result = run_campaign(
-                    job_id="no-audio-test",
+                    job_id="no-music-test",
                     topic="A quiet coffee ritual",
                     mode=RenderMode.slideshow,
                     beat_count=3,
                     emit=lambda event_type, data: events.append((event_type, data)),
-                    generate_audio=False,
+                    generate_music=False,
                 )
         finally:
             settings.llm_provider = prior_provider
@@ -295,7 +330,7 @@ class LocalRenderGuardTests(unittest.TestCase):
                 setattr(settings, field, value)
 
         self.assertEqual(result.status, JobStatus.done)
-        self.assertFalse(result.generate_audio)
+        self.assertFalse(result.generate_music)
         self.assertIsNone(result.music_url)
         generate_music.assert_not_called()
         generate_voiceover.assert_not_called()
@@ -303,6 +338,86 @@ class LocalRenderGuardTests(unittest.TestCase):
         self.assertIn(
             ("step.completed", {"step": "audio", "enabled": False, "skipped": True}), events
         )
+
+    def test_pov_generates_voiceover_even_when_background_music_is_disabled(self) -> None:
+        plan = BeatPlan(
+            hook="A quiet coffee ritual",
+            beats=[
+                {"index": 0, "concept": "coffee", "caption": "Brew better", "vo": "Brew better."},
+                {"index": 1, "concept": "pour over", "caption": "Slow down", "vo": "Slow down."},
+                {
+                    "index": 2,
+                    "concept": "morning desk",
+                    "caption": "Start here",
+                    "vo": "Start here.",
+                },
+            ],
+            suggested_caption="Make room for ritual.",
+            hashtags=["coffee"],
+        )
+        rendered = POVBeatRender(
+            image_url="https://example.test/image.png",
+            video_url="https://example.test/video.mp4",
+            cost_usd=0.02,
+        )
+        voiceover = SimpleNamespace(url="https://example.test/voiceover.mp3", run_id=None)
+        events: list[tuple[str, dict]] = []
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            with (
+                patch("app.engine.run_engine.pending_checkpoints", return_value=[]),
+                patch("app.engine.run_engine.build_sink", return_value=SimpleNamespace()),
+                patch(
+                    "app.engine.run_engine._render_or_resume_pov_beat",
+                    new=AsyncMock(return_value=rendered),
+                ),
+                patch("app.engine.run_engine.generate_music_asset") as generate_music,
+                patch(
+                    "app.engine.run_engine.generate_voiceover_asset",
+                    return_value=voiceover,
+                ) as generate_voiceover,
+                patch("app.engine.run_engine.readable_asset_url", side_effect=lambda url: url),
+                patch(
+                    "app.engine.run_engine.assemble_pov_montage",
+                    return_value="/tmp/reel.mp4",
+                ) as assemble,
+                patch(
+                    "app.engine.run_engine._store_final_reel",
+                    return_value=(
+                        "https://example.test/reel.mp4",
+                        "a" * 64,
+                        "https://example.test/manifest.json",
+                        "run-final",
+                        True,
+                    ),
+                ),
+            ):
+                result = _run_pov_campaign(
+                    job_id="pov-no-music-test",
+                    topic="A quiet coffee ritual",
+                    beat_plan=plan,
+                    emit=lambda event_type, data: events.append((event_type, data)),
+                    sink=SimpleNamespace(),
+                    work_dir=Path(temp_dir),
+                    product_assets=None,
+                    record_provenance=None,
+                    generate_music=False,
+                )
+
+        self.assertEqual(result.status, JobStatus.done)
+        self.assertFalse(result.generate_music)
+        self.assertIsNone(result.music_url)
+        generate_music.assert_not_called()
+        generate_voiceover.assert_called_once()
+        self.assertTrue(generate_voiceover.call_args.kwargs["force"])
+        self.assertIsNone(assemble.call_args.args[1])
+        self.assertEqual(
+            assemble.call_args.kwargs["voiceover_url"], "https://example.test/voiceover.mp3"
+        )
+        self.assertIn(
+            ("step.completed", {"step": "audio", "enabled": False, "skipped": True}), events
+        )
+        self.assertIn(("step.completed", {"step": "voiceover", "enabled": True}), events)
 
 
 if __name__ == "__main__":

@@ -5,11 +5,17 @@ function campaignPath(jobId: string) {
   return `/campaigns/${encodeURIComponent(jobId)}`
 }
 
-export function createCampaign(topic: string, beatCount: number, mode: RenderMode, startImmediately: boolean, generateAudio: boolean) {
+export function createCampaign(
+  topic: string,
+  beatCount: number,
+  mode: RenderMode,
+  startImmediately: boolean,
+  generateMusic: boolean
+) {
   return apiRequest<CampaignStartResponse>("/campaigns", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ topic, beat_count: beatCount, mode, start_immediately: startImmediately, generate_audio: generateAudio }),
+    body: JSON.stringify({ topic, beat_count: beatCount, mode, start_immediately: startImmediately, generate_music: generateMusic }),
   })
 }
 

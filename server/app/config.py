@@ -231,7 +231,7 @@ class Settings(BaseSettings):
         return ["GMI_API_KEY"] if not self.gmi_api_key else []
 
     def missing_campaign_settings(
-        self, mode: object | None = None, *, generate_audio: bool = True
+        self, mode: object | None = None, *, generate_music: bool = True
     ) -> list[str]:
         """Return settings required before a browser-playable campaign starts."""
         required = {
@@ -242,11 +242,11 @@ class Settings(BaseSettings):
             # base (or a future presigning implementation), private B2 URLs 403.
             "B2_PUBLIC_URL_BASE": self.b2_public_url_base,
         }
-        if generate_audio:
+        mode_value = getattr(mode, "value", mode)
+        if generate_music:
             required["STABILITY_API_KEY"] = self.stability_api_key
-        if getattr(mode, "value", mode) == "pov":
+        if mode_value == "pov":
             required["GMI_API_KEY"] = self.gmi_api_key
-        if generate_audio and self.voiceover_enabled:
             required["ELEVENLABS_API_KEY"] = self.elevenlabs_api_key
         missing = [name for name, value in required.items() if not value]
         missing.extend(self.missing_image_provider_settings())

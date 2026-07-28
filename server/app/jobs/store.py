@@ -49,7 +49,7 @@ def init_db() -> None:
                 topic       TEXT,
                 mode        TEXT,
                 beat_count  INTEGER NOT NULL DEFAULT 5,
-                generate_audio INTEGER NOT NULL DEFAULT 1,
+                generate_music INTEGER NOT NULL DEFAULT 1,
                 result_json TEXT,
                 error       TEXT,
                 started_at  DATETIME,
@@ -122,8 +122,10 @@ def init_db() -> None:
         columns = {row[1] for row in conn.execute("PRAGMA table_info(jobs)")}
         if "beat_count" not in columns:
             conn.execute("ALTER TABLE jobs ADD COLUMN beat_count INTEGER NOT NULL DEFAULT 5")
-        if "generate_audio" not in columns:
-            conn.execute("ALTER TABLE jobs ADD COLUMN generate_audio INTEGER NOT NULL DEFAULT 1")
+        if "generate_music" not in columns:
+            conn.execute("ALTER TABLE jobs ADD COLUMN generate_music INTEGER NOT NULL DEFAULT 1")
+            if "generate_audio" in columns:
+                conn.execute("UPDATE jobs SET generate_music=generate_audio")
         for column, definition in (
             ("started_at", "DATETIME"),
             ("lease_owner", "TEXT"),
@@ -146,15 +148,15 @@ def init_db() -> None:
 
 
 def create_job(
-    job_id: str, topic: str, mode: str, beat_count: int, generate_audio: bool = True
+    job_id: str, topic: str, mode: str, beat_count: int, generate_music: bool = True
 ) -> None:
     with _lock, _conn() as conn:
         conn.execute(
             """
-            INSERT INTO jobs (job_id, status, topic, mode, beat_count, generate_audio)
+            INSERT INTO jobs (job_id, status, topic, mode, beat_count, generate_music)
             VALUES (?,?,?,?,?,?)
             """,
-            (job_id, "pending", topic, mode, beat_count, int(generate_audio)),
+            (job_id, "pending", topic, mode, beat_count, int(generate_music)),
         )
 
 

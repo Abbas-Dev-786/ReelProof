@@ -14,19 +14,19 @@ type CampaignComposerProps = {
   topic: string
   beatCount: number
   mode: RenderMode
-  generateAudio: boolean
+  generateMusic: boolean
   files: File[]
   stage: GenerationStage
   error: string | null
   onTopicChange: (topic: string) => void
   onBeatCountChange: (count: number) => void
   onModeChange: (mode: RenderMode) => void
-  onGenerateAudioChange: (generateAudio: boolean) => void
+  onGenerateMusicChange: (generateMusic: boolean) => void
   onFilesChange: (files: File[]) => void
   onSubmit: (event: FormEvent<HTMLFormElement>) => void
 }
 
-export function CampaignComposer({ topic, beatCount, mode, generateAudio, files, stage, error, onTopicChange, onBeatCountChange, onModeChange, onGenerateAudioChange, onFilesChange, onSubmit }: CampaignComposerProps) {
+export function CampaignComposer({ topic, beatCount, mode, generateMusic, files, stage, error, onTopicChange, onBeatCountChange, onModeChange, onGenerateMusicChange, onFilesChange, onSubmit }: CampaignComposerProps) {
   const isWorking = stage === "uploading" || stage === "generating"
 
   return (
@@ -47,10 +47,10 @@ export function CampaignComposer({ topic, beatCount, mode, generateAudio, files,
           <RenderModeSelector value={mode} disabled={isWorking} onChange={onModeChange} />
           <div className="flex items-center justify-between gap-4 rounded-xl border border-[#e2dfd8] bg-white px-4 py-3">
             <div>
-              <Label htmlFor="generate-audio" className="text-sm font-medium text-[#393640]">Generate music & voiceover</Label>
-              <p className="mt-1 text-xs leading-5 text-[#7d7982]">Turn this off for a faster export without Stability or ElevenLabs audio calls.</p>
+              <Label htmlFor="generate-music" className="text-sm font-medium text-[#393640]">Generate background music</Label>
+              <p className="mt-1 text-xs leading-5 text-[#7d7982]">Turn this off for a faster export without Stability music calls. POV voiceover still runs.</p>
             </div>
-            <Switch id="generate-audio" checked={generateAudio} disabled={isWorking} onCheckedChange={onGenerateAudioChange} />
+            <Switch id="generate-music" checked={generateMusic} disabled={isWorking} onCheckedChange={onGenerateMusicChange} />
           </div>
         </div>
       </div>

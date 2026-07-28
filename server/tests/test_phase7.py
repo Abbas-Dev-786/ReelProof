@@ -72,7 +72,7 @@ class ReliabilityAndSafetyTests(unittest.TestCase):
             for key, value in prior.items():
                 setattr(settings, key, value)
 
-    def test_audio_credentials_are_not_required_when_generated_audio_is_disabled(self) -> None:
+    def test_stability_key_is_not_required_when_background_music_is_disabled(self) -> None:
         fields = ("stability_api_key", "voiceover_enabled", "elevenlabs_api_key")
         prior = {field: getattr(settings, field) for field in fields}
         try:
@@ -80,10 +80,26 @@ class ReliabilityAndSafetyTests(unittest.TestCase):
             settings.voiceover_enabled = True
             settings.elevenlabs_api_key = ""
 
-            missing = settings.missing_campaign_settings(RenderMode.slideshow, generate_audio=False)
+            missing = settings.missing_campaign_settings(RenderMode.slideshow, generate_music=False)
 
             self.assertNotIn("STABILITY_API_KEY", missing)
             self.assertNotIn("ELEVENLABS_API_KEY", missing)
+        finally:
+            for key, value in prior.items():
+                setattr(settings, key, value)
+
+    def test_pov_requires_elevenlabs_key_even_when_background_music_is_disabled(self) -> None:
+        fields = ("stability_api_key", "elevenlabs_api_key", "gmi_api_key")
+        prior = {field: getattr(settings, field) for field in fields}
+        try:
+            settings.stability_api_key = ""
+            settings.elevenlabs_api_key = ""
+            settings.gmi_api_key = "test-gmi-key"
+
+            missing = settings.missing_campaign_settings(RenderMode.pov, generate_music=False)
+
+            self.assertNotIn("STABILITY_API_KEY", missing)
+            self.assertIn("ELEVENLABS_API_KEY", missing)
         finally:
             for key, value in prior.items():
                 setattr(settings, key, value)

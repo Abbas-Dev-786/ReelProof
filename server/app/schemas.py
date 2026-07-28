@@ -48,7 +48,7 @@ class CreateCampaignRequest(BaseModel):
     topic: str = Field(..., min_length=3, max_length=500)
     mode: RenderMode = RenderMode.slideshow
     beat_count: int = Field(default=5, ge=3, le=8)
-    generate_audio: bool = True
+    generate_music: bool = True
     start_immediately: bool = True
 
     @field_validator("topic")
@@ -91,7 +91,7 @@ class CampaignResult(BaseModel):
     topic: str
     mode: RenderMode
     status: JobStatus
-    generate_audio: bool = True
+    generate_music: bool = True
     beat_plan: BeatPlan | None = None
     beats: list[BeatResult] = Field(default_factory=list)
     reel_url: str | None = None  # final 9:16 MP4 in B2

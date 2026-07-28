@@ -151,7 +151,7 @@ async def _stage_and_ingest_product_upload(
 @router.post("/campaigns", response_model=CreateCampaignResponse)
 async def create_campaign(req: CreateCampaignRequest) -> CreateCampaignResponse:
     job_id = str(uuid.uuid4())
-    create_job(job_id, req.topic, req.mode.value, req.beat_count, req.generate_audio)
+    create_job(job_id, req.topic, req.mode.value, req.beat_count, req.generate_music)
 
     if req.start_immediately:
         _start_job(job_id)
@@ -185,7 +185,7 @@ def _start_job(job_id: str) -> None:
         RenderMode(job["mode"]),
         job["beat_count"],
         product_assets=assets,
-        generate_audio=bool(job.get("generate_audio", 1)),
+        generate_music=bool(job.get("generate_music", job.get("generate_audio", 1))),
     )
 
 
@@ -278,7 +278,7 @@ async def get_campaign(job_id: str) -> CampaignResult:
         topic=job.get("topic", ""),
         mode=RenderMode(job.get("mode", "slideshow")),
         status=JobStatus(job["status"]),
-        generate_audio=bool(job.get("generate_audio", 1)),
+        generate_music=bool(job.get("generate_music", job.get("generate_audio", 1))),
         error=job.get("error"),
     )
 

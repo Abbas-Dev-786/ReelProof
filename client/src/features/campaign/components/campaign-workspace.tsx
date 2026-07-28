@@ -19,7 +19,7 @@ export function CampaignWorkspace({ onOpenVerifier }: CampaignWorkspaceProps) {
   const [topic, setTopic] = useState("")
   const [beatCount, setBeatCount] = useState(5)
   const [mode, setMode] = useState<RenderMode>("slideshow")
-  const [generateAudio, setGenerateAudio] = useState(true)
+  const [generateMusic, setGenerateMusic] = useState(true)
   const [files, setFiles] = useState<File[]>([])
   const [stage, setStage] = useState<GenerationStage>("idle")
   const [jobId, setJobId] = useState<string | null>(null)
@@ -91,7 +91,7 @@ export function CampaignWorkspace({ onOpenVerifier }: CampaignWorkspaceProps) {
         topic: topic.trim(),
         beatCount,
         mode,
-        generateAudio,
+        generateMusic,
         files,
       })
       setJobId(nextJobId)
@@ -131,7 +131,7 @@ export function CampaignWorkspace({ onOpenVerifier }: CampaignWorkspaceProps) {
               <Sparkles className="size-4" />
             </div>
           </div>
-          <CampaignComposer topic={topic} beatCount={beatCount} mode={mode} generateAudio={generateAudio} files={files} stage={stage} error={error} onTopicChange={setTopic} onBeatCountChange={setBeatCount} onModeChange={setMode} onGenerateAudioChange={setGenerateAudio} onFilesChange={setFiles} onSubmit={handleSubmit} />
+          <CampaignComposer topic={topic} beatCount={beatCount} mode={mode} generateMusic={generateMusic} files={files} stage={stage} error={error} onTopicChange={setTopic} onBeatCountChange={setBeatCount} onModeChange={setMode} onGenerateMusicChange={setGenerateMusic} onFilesChange={setFiles} onSubmit={handleSubmit} />
         </div>
       </section>
 

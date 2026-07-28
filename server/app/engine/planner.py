@@ -213,9 +213,7 @@ def _planner_chat(prompt: str):
     raise last_error or RuntimeError("Groq planner failed without an error")
 
 
-def parse_beat_plan(
-    raw: str, beat_count: int, *, assign_indexes_locally: bool = False
-) -> BeatPlan:
+def parse_beat_plan(raw: str, beat_count: int, *, assign_indexes_locally: bool = False) -> BeatPlan:
     """Validate the model response before it can enter the render pipeline."""
     raw = raw.strip()
     if raw.startswith("```"):
@@ -249,7 +247,13 @@ def parse_beat_plan(
     return plan
 
 
-def plan_beats(topic: str, beat_count: int = 5, product_context: str | None = None) -> BeatPlan:
+def plan_beats(
+    topic: str,
+    beat_count: int = 5,
+    product_context: str | None = None,
+    *,
+    voiceover_required: bool = False,
+) -> BeatPlan:
     if not settings.active_llm_api_key:
         raise RuntimeError(f"{settings.active_llm_key_env_name} is required to plan a campaign")
     ensure_prompt_allowed(topic)
@@ -257,10 +261,19 @@ def plan_beats(topic: str, beat_count: int = 5, product_context: str | None = No
     user_msg = f"Topic: {topic}\nbeat_count: {beat_count}"
     if product_context:
         user_msg += f"\nProduct context: {product_context}"
+    if voiceover_required:
+        user_msg += (
+            "\nVoiceover: every beat must include one concise spoken narration line in `vo`."
+        )
 
     with trace_operation(
         "reelproof.planner",
-        inputs={"topic": topic, "beat_count": beat_count, "has_product_context": bool(product_context)},
+        inputs={
+            "topic": topic,
+            "beat_count": beat_count,
+            "has_product_context": bool(product_context),
+            "voiceover_required": voiceover_required,
+        },
         metadata={"provider": settings.llm_provider, "model": settings.active_planner_model},
         run_type="llm",
     ) as trace:
@@ -273,6 +286,8 @@ def plan_beats(topic: str, beat_count: int = 5, product_context: str | None = No
                     beat_count,
                     assign_indexes_locally=settings.llm_provider == "groq",
                 )
+                if voiceover_required and any(not (beat.vo or "").strip() for beat in plan.beats):
+                    raise ValueError("POV planner must return a non-empty vo line for every beat")
             except (KeyError, TypeError, ValueError, ValidationError) as exc:
                 last_error = exc
                 if attempt == _GROQ_PLANNER_LOCAL_VALIDATION_ATTEMPTS:
