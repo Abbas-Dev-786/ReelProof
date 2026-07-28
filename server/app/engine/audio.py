@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import tempfile
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -10,7 +11,7 @@ from genblaze_elevenlabs import ElevenLabsTTSProvider
 
 from ..config import settings
 from ..observability import langsmith_tracer
-from ..workspace import require_media_workspace
+from ..workspace import current_media_workspace, require_media_workspace
 from .safety import audio_retry_policy, moderation_hook
 from .stability_audio import StabilityAudioProvider
 
@@ -26,6 +27,13 @@ class GeneratedAudio:
     manifest_uri: str | None = None
     parent_run_id: str | None = None
     cost_usd: float = 0.0
+
+
+def _music_output_dir() -> Path:
+    workspace = current_media_workspace()
+    if workspace is None:
+        workspace = require_media_workspace(Path(tempfile.gettempdir()) / "reelproof-music")
+    return workspace / "music"
 
 
 def _audio_result(result: Any) -> GeneratedAudio:
@@ -57,7 +65,9 @@ def generate_music_asset(
         raise ValueError("duration_sec must be greater than zero")
 
     provider = StabilityAudioProvider(
-        api_key=settings.stability_api_key or None, retry_policy=audio_retry_policy()
+        api_key=settings.stability_api_key or None,
+        output_dir=_music_output_dir(),
+        retry_policy=audio_retry_policy(),
     )
 
     result = (

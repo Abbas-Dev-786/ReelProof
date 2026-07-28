@@ -6,10 +6,20 @@ import unittest
 import httpx
 from genblaze_core import Modality, Step
 
+from app.engine.audio import _music_output_dir
 from app.engine.stability_audio import StabilityAudioProvider, _MultipartFormDataClient
+from app.workspace import media_workspace
 
 
 class StabilityAudioMultipartTests(unittest.TestCase):
+    def test_music_output_dir_uses_active_media_workspace(self) -> None:
+        with media_workspace() as workspace:
+            output_dir = _music_output_dir()
+
+        self.assertTrue(output_dir.is_relative_to(workspace))
+        self.assertEqual(output_dir.name, "music")
+        self.assertFalse(workspace.exists())
+
     def test_text_to_audio_request_uses_multipart_form_data(self) -> None:
         captured: dict[str, bytes | str] = {}
 
