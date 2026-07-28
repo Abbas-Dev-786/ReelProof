@@ -5,7 +5,12 @@ from __future__ import annotations
 import tempfile
 from collections.abc import Iterator
 from contextlib import contextmanager
+from contextvars import ContextVar
 from pathlib import Path
+
+_CURRENT_MEDIA_WORKSPACE: ContextVar[Path | None] = ContextVar(
+    "current_media_workspace", default=None
+)
 
 
 def _system_temp_directory() -> Path:
@@ -32,8 +37,18 @@ def require_media_workspace(path: str | Path) -> Path:
     return workspace
 
 
+def current_media_workspace() -> Path | None:
+    """Return the active campaign media workspace, if rendering is in progress."""
+    return _CURRENT_MEDIA_WORKSPACE.get()
+
+
 @contextmanager
 def media_workspace() -> Iterator[Path]:
     """Yield an isolated temporary workspace and remove it when the job ends."""
     with tempfile.TemporaryDirectory(prefix="reelproof-media-") as directory:
-        yield require_media_workspace(directory)
+        workspace = require_media_workspace(directory)
+        token = _CURRENT_MEDIA_WORKSPACE.set(workspace)
+        try:
+            yield workspace
+        finally:
+            _CURRENT_MEDIA_WORKSPACE.reset(token)

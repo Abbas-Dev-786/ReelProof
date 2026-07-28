@@ -15,6 +15,7 @@ from app.engine.cloudflare_image import CloudflareImageProvider
 from app.engine.images import image_generation_params, image_model
 from app.engine.safety import ContentSafetyError, ensure_assets_allowed, ensure_prompt_allowed
 from app.schemas import RenderMode
+from app.workspace import media_workspace
 
 
 class ReliabilityAndSafetyTests(unittest.TestCase):
@@ -35,7 +36,9 @@ class ReliabilityAndSafetyTests(unittest.TestCase):
             settings.cloudflare_api_token = "test-token"
             settings.cloudflare_image_model = "@cf/bytedance/stable-diffusion-xl-lightning"
 
-            provider = _image_provider()
+            with media_workspace() as workspace:
+                provider = _image_provider()
+                self.assertTrue(provider._output_dir.is_relative_to(workspace))
             self.assertEqual(provider.name, "cloudflare-image")
             self.assertEqual(image_model(has_product_input=False), settings.cloudflare_image_model)
             self.assertEqual(

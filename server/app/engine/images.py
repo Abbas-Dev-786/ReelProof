@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import tempfile
+from pathlib import Path
 from typing import Any
 
 from genblaze_core.providers import per_unit
@@ -7,8 +9,18 @@ from genblaze_core.providers.base import BaseProvider
 from genblaze_gmicloud import GMICloudImageProvider
 
 from ..config import settings
+from ..workspace import current_media_workspace, require_media_workspace
 from .cloudflare_image import CloudflareImageProvider
 from .safety import image_retry_policy
+
+
+def _cloudflare_output_dir() -> Path:
+    workspace = current_media_workspace()
+    if workspace is None:
+        workspace = require_media_workspace(
+            Path(tempfile.gettempdir()) / "reelproof-cloudflare-images"
+        )
+    return workspace / "cloudflare-images"
 
 
 def image_provider() -> BaseProvider:
@@ -16,7 +28,7 @@ def image_provider() -> BaseProvider:
         return CloudflareImageProvider(
             account_id=settings.cloudflare_account_id,
             api_token=settings.cloudflare_api_token,
-            output_dir=settings.output_path / "cloudflare-images",
+            output_dir=_cloudflare_output_dir(),
             retry_policy=image_retry_policy(),
         )
 
