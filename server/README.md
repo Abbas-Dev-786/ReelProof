@@ -18,7 +18,10 @@ model IDs can be overridden with the provider-specific `*_PLANNER_MODEL`,
 ## Local setup
 
 Use Python 3.11 or newer. Create `server/.env` from `.env.example`, then set
-the credentials required for the provider paths you intend to run.
+only the credentials/resource IDs in that file. Normal model IDs, dimensions,
+timeouts, retry counts, paths, and feature flags already have defaults in
+`app/config.py`; override them only when you intentionally need a different
+runtime.
 
 ```bash
 cd server
@@ -37,8 +40,8 @@ executables without making paid provider calls:
 .venv/bin/python smoke_test.py
 ```
 
-`smoke_test.py --live` makes paid image and music requests and should only be
-run with an approved test account and B2 bucket. Full campaign creation also
+`smoke_test.py --live` makes image and music provider requests and should only
+be run with an approved test account and B2 bucket. Full campaign creation also
 requires a browser-reachable `B2_PUBLIC_URL_BASE` until presigned asset URLs
 are implemented.
 
@@ -62,11 +65,10 @@ campaigns. It creates real API jobs, waits for their verified B2-backed results,
 and prints durable reel and manifest URLs for the demo runbook.
 
 Before running it, ensure `ffmpeg` and `ffprobe` are on `PATH`, configure the
-selected LLM provider, GMI, Stability, and B2 credentials, and start the API
-in another shell **without** `--reload`. Reload mode is for development only:
-when source files change it terminates the server process and its in-process
-campaign worker, which interrupts a showcase run.
-This makes paid provider requests.
+minimal `.env.example` credentials, and start the API in another shell
+**without** `--reload`. Reload mode is for development only: when source files
+change it terminates the server process and its in-process campaign worker,
+which interrupts a showcase run. This makes provider requests.
 
 ```bash
 .venv/bin/python -m uvicorn main:app --host 127.0.0.1 --port 8000
@@ -80,15 +82,16 @@ python -m uvicorn main:app --host 127.0.0.1 --port 8000
 python .\scripts\pregenerate_showcases.py
 ```
 
-The API now uses bounded retry policies for images, audio, and video. Set
-`IMAGE_PROVIDER=cloudflare` to generate still images through Cloudflare Workers
-AI instead of GMI; provide `CLOUDFLARE_ACCOUNT_ID` and `CLOUDFLARE_API_TOKEN`.
-The default Cloudflare still model is
+The API now uses bounded retry policies for images, audio, and video.
+Cloudflare Workers AI is the default still-image provider; provide
+`CLOUDFLARE_ACCOUNT_ID` and `CLOUDFLARE_API_TOKEN`. The default Cloudflare
+still model is
 `@cf/bytedance/stable-diffusion-xl-lightning` with vertical `768x1344`
-dimensions. GMI image fallback lists are still available when
-`IMAGE_PROVIDER=gmi`, and `POV_VIDEO_FALLBACK_MODELS` still controls the GMI
-video step. A shared GenBlaze moderation hook screens prompts and asset outputs,
-while upload assets are screened before they are ingested into B2.
+dimensions. The original GMI image path is still available by setting
+`IMAGE_PROVIDER=gmi`; POV video mode still needs `GMI_API_KEY` because its video
+step remains GMI-backed. A shared GenBlaze moderation hook screens prompts and
+asset outputs, while upload assets are screened before they are ingested into
+B2.
 
 Optional narration is controlled by `VOICEOVER_ENABLED`. When enabled, the
 planner's non-empty `vo` beat lines are combined into one ElevenLabs narration
@@ -106,7 +109,7 @@ B2-backed GenBlaze runs and recorded in campaign provenance.
   Progress events are stored in SQLite and replayed over SSE with
   `Last-Event-ID`, so reconnecting clients do not lose their campaign timeline.
 - Product uploads are restricted to JPEG, PNG, and WebP; their byte and pixel
-  limits are configured in `.env`.
+  limits default in `app/config.py`.
 - SQLite is suitable for a single-node deployment. For multiple hosts, point
   all replicas at a shared production database and replace the local worker
   threads with a managed queue before increasing concurrency.

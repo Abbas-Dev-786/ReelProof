@@ -50,9 +50,10 @@ class Settings(BaseSettings):
     nvidia_planner_model: str = "z-ai/glm-5.2"
     nvidia_vision_model: str = "qwen/qwen3.5-397b-a17b"
 
-    # Image generation. GMI remains the default for backwards compatibility;
-    # set IMAGE_PROVIDER=cloudflare to use Cloudflare Workers AI for stills.
-    image_provider: Literal["gmi", "cloudflare"] = "gmi"
+    # Image generation. Cloudflare is the default hackathon path because it
+    # avoids GMI credits for still-image generation. Set IMAGE_PROVIDER=gmi to
+    # use the original GMI image models.
+    image_provider: Literal["gmi", "cloudflare"] = "cloudflare"
     gmi_api_key: str = ""
     cloudflare_account_id: str = ""
     cloudflare_api_token: str = ""
@@ -209,12 +210,13 @@ class Settings(BaseSettings):
     def missing_phase1_settings(self) -> list[str]:
         """Return the credentials required by the paid Phase 1 smoke run."""
         required = {
-            "GMI_API_KEY": self.gmi_api_key,
             "STABILITY_API_KEY": self.stability_api_key,
             "B2_KEY_ID": self.b2_key_id,
             "B2_APP_KEY": self.b2_app_key,
         }
-        return [name for name, value in required.items() if not value]
+        missing = [name for name, value in required.items() if not value]
+        missing.extend(self.missing_image_provider_settings())
+        return list(dict.fromkeys(missing))
 
     def missing_image_provider_settings(self) -> list[str]:
         if self.image_provider == "cloudflare":

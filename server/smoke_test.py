@@ -70,10 +70,9 @@ def preflight() -> bool:
 def live_smoke() -> bool:
     """Make the two paid Phase 1 provider calls and verify B2 persistence."""
     from genblaze_core import Modality, Pipeline
-    from genblaze_core.providers import per_unit
-    from genblaze_gmicloud import GMICloudImageProvider
 
     from app.config import settings
+    from app.engine.images import image_generation_params, image_model, image_provider
     from app.engine.stability_audio import StabilityAudioProvider
     from app.storage import build_sink
 
@@ -89,19 +88,15 @@ def live_smoke() -> bool:
         sink = build_sink()  # B2 credential/bucket preflight happens here.
         report("B2 backend preflight", True)
 
-        image = GMICloudImageProvider(api_key=settings.gmi_api_key)
-        # GMI rates are user-supplied. Update the .env value if your account's
-        # contract differs from the documented Reve Create per-image rate.
-        image.models.register_pricing(
-            settings.gmi_image_model, per_unit(settings.gmi_image_unit_cost_usd)
-        )
+        image = image_provider()
         image_result = (
             Pipeline("phase1-image-b2")
             .step(
                 image,
-                model=settings.gmi_image_model,
+                model=image_model(has_product_input=False),
                 prompt="A clean faceless product flat lay on a warm studio background, no text",
                 modality=Modality.IMAGE,
+                **image_generation_params(),
             )
             .run(sink=sink, timeout=120)
         )

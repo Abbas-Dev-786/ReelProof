@@ -25,7 +25,9 @@ class JudgeResponseTests(unittest.TestCase):
         settings.nvidia_chat_base_url = "https://nim.example.test/v1"
         result = SimpleNamespace(
             run=SimpleNamespace(
-                steps=[SimpleNamespace(assets=[SimpleNamespace(url="https://example.test/frame.png")])]
+                steps=[
+                    SimpleNamespace(assets=[SimpleNamespace(url="https://example.test/frame.png")])
+                ]
             )
         )
         response = SimpleNamespace(
@@ -83,7 +85,9 @@ class VisionAssetUrlTests(unittest.TestCase):
     def test_signs_b2_asset_urls_for_external_vision_models(self) -> None:
         backend = MagicMock()
         backend.key_from_url.return_value = "reelproof/run/frame.png"
-        backend.presigned_get_url.return_value = "https://s3.example.test/frame.png?signature=secret"
+        backend.presigned_get_url.return_value = (
+            "https://s3.example.test/frame.png?signature=secret"
+        )
 
         with patch("app.storage.get_backend", return_value=backend):
             url = readable_asset_url("https://cdn.example.test/reelproof/run/frame.png")
@@ -160,6 +164,8 @@ class SelfHealingLoopTests(unittest.TestCase):
 
         records: list[dict] = []
         prior_key = settings.gmi_api_key
+        prior_image_provider = settings.image_provider
+        settings.image_provider = "gmi"
         settings.gmi_api_key = "test-key"
         try:
             with patch("app.engine.loop.AgentLoop", FakeAgentLoop):
@@ -170,6 +176,7 @@ class SelfHealingLoopTests(unittest.TestCase):
                 )
         finally:
             settings.gmi_api_key = prior_key
+            settings.image_provider = prior_image_provider
 
         self.assertEqual(result.asset_url, "https://example.test/final.png")
         self.assertEqual(result.iterations, 2)

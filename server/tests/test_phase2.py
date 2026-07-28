@@ -182,8 +182,10 @@ class LocalRenderGuardTests(unittest.TestCase):
         )
         prior_values = {field: getattr(settings, field) for field in credential_fields}
         prior_provider = settings.llm_provider
+        prior_image_provider = settings.image_provider
         try:
             settings.llm_provider = "nvidia"
+            settings.image_provider = "gmi"
             for field in credential_fields:
                 setattr(settings, field, "test-value")
             with (
@@ -203,6 +205,7 @@ class LocalRenderGuardTests(unittest.TestCase):
                 )
         finally:
             settings.llm_provider = prior_provider
+            settings.image_provider = prior_image_provider
             for field, value in prior_values.items():
                 setattr(settings, field, value)
 
