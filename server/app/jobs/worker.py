@@ -40,6 +40,7 @@ def launch_worker(
     mode: RenderMode,
     beat_count: int,
     product_assets: list[Asset] | None = None,
+    generate_audio: bool = True,
 ) -> None:
     """Spawn a leased worker; all progress is persisted for SSE replay."""
 
@@ -80,6 +81,7 @@ def launch_worker(
                 emit,
                 product_assets=product_assets,
                 record_provenance=persist_provenance,
+                generate_audio=generate_audio,
             )
             if result.status.value == "done":
                 set_result(job_id, result.model_dump_json(), worker_id=WORKER_ID)

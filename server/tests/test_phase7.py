@@ -72,6 +72,22 @@ class ReliabilityAndSafetyTests(unittest.TestCase):
             for key, value in prior.items():
                 setattr(settings, key, value)
 
+    def test_audio_credentials_are_not_required_when_generated_audio_is_disabled(self) -> None:
+        fields = ("stability_api_key", "voiceover_enabled", "elevenlabs_api_key")
+        prior = {field: getattr(settings, field) for field in fields}
+        try:
+            settings.stability_api_key = ""
+            settings.voiceover_enabled = True
+            settings.elevenlabs_api_key = ""
+
+            missing = settings.missing_campaign_settings(RenderMode.slideshow, generate_audio=False)
+
+            self.assertNotIn("STABILITY_API_KEY", missing)
+            self.assertNotIn("ELEVENLABS_API_KEY", missing)
+        finally:
+            for key, value in prior.items():
+                setattr(settings, key, value)
+
     def test_cloudflare_provider_saves_raw_image_response(self) -> None:
         class FakeClient:
             def post(self, *args, **kwargs):

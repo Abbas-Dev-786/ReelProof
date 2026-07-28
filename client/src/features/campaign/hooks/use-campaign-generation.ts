@@ -6,14 +6,15 @@ type GenerationInput = {
   topic: string
   beatCount: number
   mode: RenderMode
+  generateAudio: boolean
   files: File[]
 }
 
 export function useCampaignGeneration() {
   return useMutation({
-    mutationFn: async ({ topic, beatCount, mode, files }: GenerationInput) => {
+    mutationFn: async ({ topic, beatCount, mode, generateAudio, files }: GenerationInput) => {
       const hasProducts = files.length > 0
-      const campaign = await createCampaign(topic, beatCount, mode, !hasProducts)
+      const campaign = await createCampaign(topic, beatCount, mode, !hasProducts, generateAudio)
 
       if (hasProducts) {
         await Promise.all(files.map((file) => uploadProductAsset(campaign.job_id, file)))

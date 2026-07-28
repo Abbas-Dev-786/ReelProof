@@ -19,6 +19,7 @@ export function CampaignWorkspace({ onOpenVerifier }: CampaignWorkspaceProps) {
   const [topic, setTopic] = useState("")
   const [beatCount, setBeatCount] = useState(5)
   const [mode, setMode] = useState<RenderMode>("slideshow")
+  const [generateAudio, setGenerateAudio] = useState(true)
   const [files, setFiles] = useState<File[]>([])
   const [stage, setStage] = useState<GenerationStage>("idle")
   const [jobId, setJobId] = useState<string | null>(null)
@@ -86,7 +87,13 @@ export function CampaignWorkspace({ onOpenVerifier }: CampaignWorkspaceProps) {
     setStage(files.length > 0 ? "uploading" : "generating")
 
     try {
-      const nextJobId = await generation.mutateAsync({ topic: topic.trim(), beatCount, mode, files })
+      const nextJobId = await generation.mutateAsync({
+        topic: topic.trim(),
+        beatCount,
+        mode,
+        generateAudio,
+        files,
+      })
       setJobId(nextJobId)
       setStage("generating")
     } catch (caught) {
@@ -124,7 +131,7 @@ export function CampaignWorkspace({ onOpenVerifier }: CampaignWorkspaceProps) {
               <Sparkles className="size-4" />
             </div>
           </div>
-          <CampaignComposer topic={topic} beatCount={beatCount} mode={mode} files={files} stage={stage} error={error} onTopicChange={setTopic} onBeatCountChange={setBeatCount} onModeChange={setMode} onFilesChange={setFiles} onSubmit={handleSubmit} />
+          <CampaignComposer topic={topic} beatCount={beatCount} mode={mode} generateAudio={generateAudio} files={files} stage={stage} error={error} onTopicChange={setTopic} onBeatCountChange={setBeatCount} onModeChange={setMode} onGenerateAudioChange={setGenerateAudio} onFilesChange={setFiles} onSubmit={handleSubmit} />
         </div>
       </section>
 

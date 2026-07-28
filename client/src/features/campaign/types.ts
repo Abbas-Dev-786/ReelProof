@@ -25,6 +25,7 @@ export type Campaign = {
   topic: string
   mode: RenderMode
   status: CampaignStatus
+  generate_audio: boolean
   beat_plan?: {
     hook: string
     beats: Beat[]

@@ -198,6 +198,7 @@ def _run_pov_campaign(
     work_dir: Path,
     product_assets: Sequence[Asset] | None,
     record_provenance: Callable[[dict[str, Any]], None] | None,
+    generate_audio: bool = True,
 ) -> CampaignResult:
     """Run the long-running POV path in the worker, never in a request handler."""
     checkpoints = pending_checkpoints(job_id)
@@ -257,30 +258,36 @@ def _run_pov_campaign(
         )
         emit("beat.completed", {"beat_index": beat.index})
 
-    emit("step.started", {"step": "audio", "message": "Generating music..."})
-    music = generate_music_asset(
-        topic,
-        duration_sec=len(rendered_beats) * settings.pov_clip_duration_sec,
-        sink=build_sink(),
-        job_id=job_id,
-    )
-    _record_generated_audio(music, record_provenance)
-    emit("step.completed", {"step": "audio"})
+    music: GeneratedAudio | None = None
+    voiceover: GeneratedAudio | None = None
+    if generate_audio:
+        emit("step.started", {"step": "audio", "message": "Generating music..."})
+        music = generate_music_asset(
+            topic,
+            duration_sec=len(rendered_beats) * settings.pov_clip_duration_sec,
+            sink=build_sink(),
+            job_id=job_id,
+        )
+        _record_generated_audio(music, record_provenance)
+        emit("step.completed", {"step": "audio", "enabled": True})
 
-    emit("step.started", {"step": "voiceover", "message": "Generating voiceover..."})
-    voiceover = generate_voiceover_asset(
-        [beat.vo for beat in beat_plan.beats if beat.vo],
-        sink=build_sink(),
-        job_id=job_id,
-        output_dir=work_dir,
-    )
-    _record_generated_audio(voiceover, record_provenance)
-    emit("step.completed", {"step": "voiceover", "enabled": voiceover is not None})
+        emit("step.started", {"step": "voiceover", "message": "Generating voiceover..."})
+        voiceover = generate_voiceover_asset(
+            [beat.vo for beat in beat_plan.beats if beat.vo],
+            sink=build_sink(),
+            job_id=job_id,
+            output_dir=work_dir,
+        )
+        _record_generated_audio(voiceover, record_provenance)
+        emit("step.completed", {"step": "voiceover", "enabled": voiceover is not None})
+    else:
+        emit("step.completed", {"step": "audio", "enabled": False, "skipped": True})
+        emit("step.completed", {"step": "voiceover", "enabled": False, "skipped": True})
 
     emit("step.started", {"step": "assemble", "message": "Assembling POV montage..."})
     reel_path = assemble_pov_montage(
         [readable_asset_url(rendered.video_url) for rendered in rendered_beats],
-        readable_asset_url(music.url),
+        readable_asset_url(music.url) if music else None,
         settings.pov_clip_duration_sec,
         output_dir=work_dir,
         captions=[beat.caption for beat in beat_plan.beats],
@@ -304,10 +311,11 @@ def _run_pov_campaign(
         topic=topic,
         mode=RenderMode.pov,
         status=JobStatus.done,
+        generate_audio=generate_audio,
         beat_plan=beat_plan,
         beats=beat_results,
         reel_url=reel_url,
-        music_url=music.url,
+        music_url=music.url if music else None,
         suggested_caption=beat_plan.suggested_caption,
         hashtags=beat_plan.hashtags,
         manifest_hash=manifest_hash,
@@ -325,11 +333,18 @@ def run_campaign(
     emit: Callable[[str, dict[str, Any]], None],  # emit(event_type, data)
     product_assets: Sequence[Asset] | None = None,
     record_provenance: Callable[[dict[str, Any]], None] | None = None,
+    generate_audio: bool = True,
 ) -> CampaignResult:
     """Trace one campaign root while the engine records durable provenance."""
     with trace_operation(
         "reelproof.campaign",
-        inputs={"job_id": job_id, "topic": topic, "mode": mode.value, "beat_count": beat_count},
+        inputs={
+            "job_id": job_id,
+            "topic": topic,
+            "mode": mode.value,
+            "beat_count": beat_count,
+            "generate_audio": generate_audio,
+        },
         metadata={"has_product_assets": bool(product_assets)},
     ) as trace:
         with media_workspace() as work_dir:
@@ -342,6 +357,7 @@ def run_campaign(
                 product_assets=product_assets,
                 record_provenance=record_provenance,
                 work_dir=work_dir,
+                generate_audio=generate_audio,
             )
         finish_trace(
             trace,
@@ -366,6 +382,7 @@ def _run_campaign(
     record_provenance: Callable[[dict[str, Any]], None] | None = None,
     *,
     work_dir: Path,
+    generate_audio: bool = True,
 ) -> CampaignResult:
     """
     Full synchronous engine. Called from a background thread.
@@ -375,7 +392,7 @@ def _run_campaign(
 
     try:
         work_dir = require_media_workspace(work_dir)
-        if missing := settings.missing_campaign_settings(mode):
+        if missing := settings.missing_campaign_settings(mode, generate_audio=generate_audio):
             raise RuntimeError("Campaign configuration is incomplete; set " + ", ".join(missing))
         if renderer_error := caption_renderer_error():
             raise RuntimeError(f"Campaign configuration is incomplete; {renderer_error}")
@@ -401,6 +418,7 @@ def _run_campaign(
                 work_dir=work_dir,
                 product_assets=product_assets,
                 record_provenance=record_provenance,
+                generate_audio=generate_audio,
             )
 
         beat_results: list[BeatResult] = []
@@ -471,30 +489,36 @@ def _run_campaign(
             )
             emit("beat.completed", {"beat_index": beat.index})
 
-        # 3. Music
-        emit("step.started", {"step": "audio", "message": "Generating music..."})
-        total_dur = len(beat_plan.beats) * settings.slideshow_beat_duration_sec
-        music = generate_music_asset(
-            topic, duration_sec=total_dur, sink=build_sink(), job_id=job_id
-        )
-        _record_generated_audio(music, record_provenance)
-        emit("step.completed", {"step": "audio"})
+        # 3. Optional generated audio
+        music: GeneratedAudio | None = None
+        voiceover: GeneratedAudio | None = None
+        if generate_audio:
+            emit("step.started", {"step": "audio", "message": "Generating music..."})
+            total_dur = len(beat_plan.beats) * settings.slideshow_beat_duration_sec
+            music = generate_music_asset(
+                topic, duration_sec=total_dur, sink=build_sink(), job_id=job_id
+            )
+            _record_generated_audio(music, record_provenance)
+            emit("step.completed", {"step": "audio", "enabled": True})
 
-        emit("step.started", {"step": "voiceover", "message": "Generating voiceover..."})
-        voiceover = generate_voiceover_asset(
-            [beat.vo for beat in beat_plan.beats if beat.vo],
-            sink=build_sink(),
-            job_id=job_id,
-            output_dir=work_dir,
-        )
-        _record_generated_audio(voiceover, record_provenance)
-        emit("step.completed", {"step": "voiceover", "enabled": voiceover is not None})
+            emit("step.started", {"step": "voiceover", "message": "Generating voiceover..."})
+            voiceover = generate_voiceover_asset(
+                [beat.vo for beat in beat_plan.beats if beat.vo],
+                sink=build_sink(),
+                job_id=job_id,
+                output_dir=work_dir,
+            )
+            _record_generated_audio(voiceover, record_provenance)
+            emit("step.completed", {"step": "voiceover", "enabled": voiceover is not None})
+        else:
+            emit("step.completed", {"step": "audio", "enabled": False, "skipped": True})
+            emit("step.completed", {"step": "voiceover", "enabled": False, "skipped": True})
 
         # 4. Assemble
         emit("step.started", {"step": "assemble", "message": "Assembling slideshow..."})
         reel_path = assemble_slideshow(
             captioned_paths,
-            readable_asset_url(music.url),
+            readable_asset_url(music.url) if music else None,
             settings.slideshow_beat_duration_sec,
             output_dir=work_dir,
             voiceover_url=readable_asset_url(voiceover.url) if voiceover else None,
@@ -520,10 +544,11 @@ def _run_campaign(
             topic=topic,
             mode=mode,
             status=JobStatus.done,
+            generate_audio=generate_audio,
             beat_plan=beat_plan,
             beats=beat_results,
             reel_url=reel_b2_url,
-            music_url=music.url,
+            music_url=music.url if music else None,
             suggested_caption=beat_plan.suggested_caption,
             hashtags=beat_plan.hashtags,
             manifest_hash=manifest_hash,
@@ -539,5 +564,6 @@ def _run_campaign(
             topic=topic,
             mode=mode,
             status=JobStatus.failed,
+            generate_audio=generate_audio,
             error=str(exc),
         )

@@ -48,7 +48,7 @@ def _build_video_filter(
 
 def assemble_slideshow(
     captioned_image_paths: list[str],
-    music_url: str,
+    music_url: str | None,
     beat_duration: float,
     output_dir: str | Path | None = None,
     voiceover_url: str | None = None,
@@ -79,10 +79,12 @@ def assemble_slideshow(
     out_path = target_dir / "reel_slideshow.mp4"
 
     # --- Download audio sources ---
-    music_suffix = Path(music_url.split("?")[0]).suffix or ".mp3"
-    with tempfile.NamedTemporaryFile(delete=False, suffix=music_suffix, dir=target_dir) as f:
-        urllib.request.urlretrieve(music_url, f.name)
-        music_path = Path(f.name)
+    music_path: Path | None = None
+    if music_url:
+        music_suffix = Path(music_url.split("?")[0]).suffix or ".mp3"
+        with tempfile.NamedTemporaryFile(delete=False, suffix=music_suffix, dir=target_dir) as f:
+            urllib.request.urlretrieve(music_url, f.name)
+            music_path = Path(f.name)
     voiceover_path: Path | None = None
     if voiceover_url:
         voiceover_suffix = Path(voiceover_url.split("?")[0]).suffix or ".mp3"
@@ -104,25 +106,29 @@ def assemble_slideshow(
             str(img_path),
         ]
 
-    # Music repeats if the provider returned a shorter track than the reel.
-    input_args += ["-stream_loop", "-1", "-i", str(music_path)]
     music_index = n
+    if music_path:
+        # Music repeats if the provider returned a shorter track than the reel.
+        input_args += ["-stream_loop", "-1", "-i", str(music_path)]
     if voiceover_path:
         input_args += ["-i", str(voiceover_path)]
 
-    filter_complex = (
-        video_filter
-        # Trim looped music to match the exact reel duration.
-        + f";[{music_index}:a]atrim=duration={total_duration},asetpts=PTS-STARTPTS,volume=0.4[music]"
-    )
-    if voiceover_path:
+    filter_complex = video_filter
+    map_args = ["-map", "[vout]"]
+    if music_path:
         filter_complex += (
-            f";[{music_index + 1}:a]atrim=duration={total_duration},asetpts=PTS-STARTPTS,"
-            "volume=1.0[voice];[music][voice]amix=inputs=2:duration=longest:"
-            "weights='0.4 1.0',alimiter=limit=0.95[aout]"
+            # Trim looped music to match the exact reel duration.
+            f";[{music_index}:a]atrim=duration={total_duration},asetpts=PTS-STARTPTS,volume=0.4[music]"
         )
-    else:
-        filter_complex += ";[music]anull[aout]"
+        if voiceover_path:
+            filter_complex += (
+                f";[{music_index + 1}:a]atrim=duration={total_duration},asetpts=PTS-STARTPTS,"
+                "volume=1.0[voice];[music][voice]amix=inputs=2:duration=longest:"
+                "weights='0.4 1.0',alimiter=limit=0.95[aout]"
+            )
+        else:
+            filter_complex += ";[music]anull[aout]"
+        map_args += ["-map", "[aout]", "-c:a", "aac", "-b:a", "128k", "-shortest"]
 
     cmd = [
         "ffmpeg",
@@ -130,21 +136,13 @@ def assemble_slideshow(
         *input_args,
         "-filter_complex",
         filter_complex,
-        "-map",
-        "[vout]",
-        "-map",
-        "[aout]",
+        *map_args,
         "-c:v",
         "libx264",
         "-preset",
         "fast",
         "-crf",
         "23",
-        "-c:a",
-        "aac",
-        "-b:a",
-        "128k",
-        "-shortest",
         "-movflags",
         "+faststart",
         str(out_path),
@@ -156,7 +154,8 @@ def assemble_slideshow(
             raise RuntimeError(f"ffmpeg slideshow assembly failed:\n{result.stderr[-2000:]}")
         return str(out_path)
     finally:
-        music_path.unlink(missing_ok=True)
+        if music_path:
+            music_path.unlink(missing_ok=True)
         if voiceover_path:
             voiceover_path.unlink(missing_ok=True)
 
@@ -193,13 +192,15 @@ def _has_audio_stream(video_path: Path) -> bool:
         timeout=30,
     )
     if result.returncode != 0:
-        raise RuntimeError(f"ffprobe failed for POV clip {video_path.name}: {result.stderr[-1000:]}")
+        raise RuntimeError(
+            f"ffprobe failed for POV clip {video_path.name}: {result.stderr[-1000:]}"
+        )
     return bool(result.stdout.strip())
 
 
 def assemble_pov_montage(
     clip_urls: list[str],
-    music_url: str,
+    music_url: str | None,
     clip_duration: int,
     output_dir: str | Path | None = None,
     captions: list[str] | None = None,
@@ -226,9 +227,11 @@ def assemble_pov_montage(
             suffix = Path(url.split("?")[0]).suffix or ".mp4"
             downloaded_paths.append(_download_asset(url, target_dir, f"-clip-{index}{suffix}"))
 
-        music_suffix = Path(music_url.split("?")[0]).suffix or ".mp3"
-        music_path = _download_asset(music_url, target_dir, f"-music{music_suffix}")
-        downloaded_paths.append(music_path)
+        music_path: Path | None = None
+        if music_url:
+            music_suffix = Path(music_url.split("?")[0]).suffix or ".mp3"
+            music_path = _download_asset(music_url, target_dir, f"-music{music_suffix}")
+            downloaded_paths.append(music_path)
         voiceover_path: Path | None = None
         if voiceover_url:
             voiceover_suffix = Path(voiceover_url.split("?")[0]).suffix or ".mp3"
@@ -264,34 +267,46 @@ def assemble_pov_montage(
         filter_parts.append(
             f"{''.join(concat_inputs)}concat=n={clip_count}:v=1:a=1[clips_v][clips_a]"
         )
-        filter_parts.append(
-            f"[{music_index}:a]atrim=duration={total_duration},asetpts=PTS-STARTPTS,"
-            "volume=0.35[music]"
-        )
+        audio_output = "[clips_a]"
+        if music_path:
+            filter_parts.append(
+                f"[{music_index}:a]atrim=duration={total_duration},asetpts=PTS-STARTPTS,"
+                "volume=0.35[music]"
+            )
         if voiceover_path:
-            voiceover_index = music_index + 1
+            voiceover_index = music_index + 1 if music_path else clip_count
             filter_parts.append(
                 f"[{voiceover_index}:a]atrim=duration={total_duration},asetpts=PTS-STARTPTS,"
                 "volume=1.0[voice]"
             )
+        if music_path and voiceover_path:
+            audio_output = "[aout]"
             filter_parts.append(
                 "[clips_a][music][voice]amix=inputs=3:duration=longest:weights='0.55 0.35 1.0',"
                 "alimiter=limit=0.95[aout]"
             )
-        else:
+        elif music_path:
+            audio_output = "[aout]"
             filter_parts.append(
                 "[clips_a][music]amix=inputs=2:duration=first:weights='0.55 0.35',"
                 "alimiter=limit=0.95[aout]"
             )
+        elif voiceover_path:
+            audio_output = "[aout]"
+            filter_parts.append(
+                "[clips_a][voice]amix=inputs=2:duration=longest:weights='0.55 1.0',"
+                "alimiter=limit=0.95[aout]"
+            )
 
         output_path = target_dir / "reel_pov_montage.mp4"
-        # Keep the music looping; voiceover is supplied once and mixed separately.
         input_args = [
             argument
             for clip_path in downloaded_paths[:clip_count]
             for argument in ("-i", str(clip_path))
         ]
-        input_args.extend(["-stream_loop", "-1", "-i", str(music_path)])
+        # Keep the music looping; voiceover is supplied once and mixed separately.
+        if music_path:
+            input_args.extend(["-stream_loop", "-1", "-i", str(music_path)])
         if voiceover_path:
             input_args.extend(["-i", str(voiceover_path)])
         result = subprocess.run(
@@ -304,7 +319,7 @@ def assemble_pov_montage(
                 "-map",
                 "[clips_v]",
                 "-map",
-                "[aout]",
+                audio_output,
                 "-c:v",
                 "libx264",
                 "-preset",

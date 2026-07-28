@@ -4,6 +4,7 @@ import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
+import { Switch } from "@/components/ui/switch"
 import { Textarea } from "@/components/ui/textarea"
 import type { GenerationStage, RenderMode } from "../types"
 import { ProductImageUpload } from "./product-image-upload"
@@ -13,17 +14,19 @@ type CampaignComposerProps = {
   topic: string
   beatCount: number
   mode: RenderMode
+  generateAudio: boolean
   files: File[]
   stage: GenerationStage
   error: string | null
   onTopicChange: (topic: string) => void
   onBeatCountChange: (count: number) => void
   onModeChange: (mode: RenderMode) => void
+  onGenerateAudioChange: (generateAudio: boolean) => void
   onFilesChange: (files: File[]) => void
   onSubmit: (event: FormEvent<HTMLFormElement>) => void
 }
 
-export function CampaignComposer({ topic, beatCount, mode, files, stage, error, onTopicChange, onBeatCountChange, onModeChange, onFilesChange, onSubmit }: CampaignComposerProps) {
+export function CampaignComposer({ topic, beatCount, mode, generateAudio, files, stage, error, onTopicChange, onBeatCountChange, onModeChange, onGenerateAudioChange, onFilesChange, onSubmit }: CampaignComposerProps) {
   const isWorking = stage === "uploading" || stage === "generating"
 
   return (
@@ -42,6 +45,13 @@ export function CampaignComposer({ topic, beatCount, mode, files, stage, error, 
             <Input id="beat-count" type="number" min={3} max={8} value={beatCount} onChange={(event) => onBeatCountChange(Math.min(8, Math.max(3, Number(event.target.value) || 3)))} disabled={isWorking} className="h-11 border-[#d9d6cf] bg-white shadow-none" />
           </div>
           <RenderModeSelector value={mode} disabled={isWorking} onChange={onModeChange} />
+          <div className="flex items-center justify-between gap-4 rounded-xl border border-[#e2dfd8] bg-white px-4 py-3">
+            <div>
+              <Label htmlFor="generate-audio" className="text-sm font-medium text-[#393640]">Generate music & voiceover</Label>
+              <p className="mt-1 text-xs leading-5 text-[#7d7982]">Turn this off for a faster export without Stability or ElevenLabs audio calls.</p>
+            </div>
+            <Switch id="generate-audio" checked={generateAudio} disabled={isWorking} onCheckedChange={onGenerateAudioChange} />
+          </div>
         </div>
       </div>
 

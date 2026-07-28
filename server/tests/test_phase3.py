@@ -45,6 +45,25 @@ class Phase3ApiTests(unittest.TestCase):
         self.assertEqual(response.json()["status"], "pending")
         return response.json()["job_id"]
 
+    def test_create_campaign_can_disable_generated_audio(self) -> None:
+        response = self.client.post(
+            "/campaigns",
+            json={
+                "topic": "A quiet coffee ritual",
+                "beat_count": 3,
+                "generate_audio": False,
+                "start_immediately": False,
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        job_id = response.json()["job_id"]
+        self.assertEqual(store.get_job(job_id)["generate_audio"], 0)
+
+        campaign = self.client.get(f"/campaigns/{job_id}")
+        self.assertEqual(campaign.status_code, 200)
+        self.assertFalse(campaign.json()["generate_audio"])
+
     def test_rejects_non_image_product_upload(self) -> None:
         job_id = self.create_draft()
         response = self.client.post(
@@ -119,6 +138,24 @@ class Phase3ApiTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(repeated.status_code, 409)
         launch_worker.assert_called_once()
+
+    def test_starting_draft_passes_generate_audio_to_worker(self) -> None:
+        response = self.client.post(
+            "/campaigns",
+            json={
+                "topic": "A quiet coffee ritual",
+                "beat_count": 3,
+                "generate_audio": False,
+                "start_immediately": False,
+            },
+        )
+        job_id = response.json()["job_id"]
+
+        with patch("app.api.routes.launch_worker") as launch_worker:
+            start = self.client.post(f"/campaigns/{job_id}/start")
+
+        self.assertEqual(start.status_code, 200)
+        self.assertIs(launch_worker.call_args.kwargs["generate_audio"], False)
 
     def test_verify_uses_persisted_provenance_record(self) -> None:
         store.record_provenance(

@@ -215,6 +215,95 @@ class LocalRenderGuardTests(unittest.TestCase):
         self.assertTrue(work_dir.is_relative_to(Path(tempfile.gettempdir()).resolve()))
         self.assertFalse(work_dir.exists())
 
+    def test_slideshow_can_skip_generated_audio(self) -> None:
+        plan = BeatPlan(
+            hook="A quiet coffee ritual",
+            beats=[
+                {"index": 0, "concept": "coffee", "caption": "Brew better"},
+                {"index": 1, "concept": "pour over", "caption": "Slow down"},
+                {"index": 2, "concept": "morning desk", "caption": "Start here"},
+            ],
+            suggested_caption="Make room for ritual.",
+            hashtags=["coffee"],
+        )
+        loop_result = SimpleNamespace(
+            asset_url="https://example.test/image.png",
+            score=0.9,
+            iterations=1,
+            passed=True,
+            total_cost_usd=0.01,
+        )
+        credential_fields = (
+            "groq_api_key",
+            "stability_api_key",
+            "b2_key_id",
+            "b2_app_key",
+            "b2_public_url_base",
+            "cloudflare_account_id",
+            "cloudflare_api_token",
+        )
+        prior_values = {field: getattr(settings, field) for field in credential_fields}
+        prior_provider = settings.llm_provider
+        prior_image_provider = settings.image_provider
+        events: list[tuple[str, dict]] = []
+        try:
+            settings.llm_provider = "groq"
+            settings.image_provider = "cloudflare"
+            for field in credential_fields:
+                setattr(settings, field, "test-value")
+            settings.stability_api_key = ""
+            with (
+                patch("app.engine.run_engine.build_sink", return_value=SimpleNamespace()),
+                patch("app.engine.run_engine.plan_beats", return_value=plan),
+                patch("app.engine.run_engine.caption_renderer_error", return_value=None),
+                patch("app.engine.run_engine.run_beat_loop", return_value=loop_result),
+                patch("app.engine.run_engine.burn_caption", return_value="/tmp/captioned.png"),
+                patch(
+                    "app.engine.run_engine._store_local_intermediate",
+                    return_value="https://example.test/captioned.png",
+                ),
+                patch("app.engine.run_engine.generate_music_asset") as generate_music,
+                patch("app.engine.run_engine.generate_voiceover_asset") as generate_voiceover,
+                patch("app.engine.run_engine.readable_asset_url", side_effect=lambda url: url),
+                patch(
+                    "app.engine.run_engine.assemble_slideshow",
+                    return_value="/tmp/reel.mp4",
+                ) as assemble,
+                patch(
+                    "app.engine.run_engine._store_final_reel",
+                    return_value=(
+                        "https://example.test/reel.mp4",
+                        "a" * 64,
+                        "https://example.test/manifest.json",
+                        "run-final",
+                        True,
+                    ),
+                ),
+            ):
+                result = run_campaign(
+                    job_id="no-audio-test",
+                    topic="A quiet coffee ritual",
+                    mode=RenderMode.slideshow,
+                    beat_count=3,
+                    emit=lambda event_type, data: events.append((event_type, data)),
+                    generate_audio=False,
+                )
+        finally:
+            settings.llm_provider = prior_provider
+            settings.image_provider = prior_image_provider
+            for field, value in prior_values.items():
+                setattr(settings, field, value)
+
+        self.assertEqual(result.status, JobStatus.done)
+        self.assertFalse(result.generate_audio)
+        self.assertIsNone(result.music_url)
+        generate_music.assert_not_called()
+        generate_voiceover.assert_not_called()
+        self.assertIsNone(assemble.call_args.args[1])
+        self.assertIn(
+            ("step.completed", {"step": "audio", "enabled": False, "skipped": True}), events
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
