@@ -7,7 +7,11 @@ import httpx
 from genblaze_core import Modality, Step
 
 from app.engine.audio import _music_output_dir
-from app.engine.stability_audio import StabilityAudioProvider, _MultipartFormDataClient
+from app.engine.stability_audio import (
+    StabilityAudioProvider,
+    _MultipartFormDataClient,
+    _normalize_generated_file_url,
+)
 from app.workspace import media_workspace
 
 
@@ -19,6 +23,19 @@ class StabilityAudioMultipartTests(unittest.TestCase):
         self.assertTrue(output_dir.is_relative_to(workspace))
         self.assertEqual(output_dir.name, "music")
         self.assertFalse(workspace.exists())
+
+    def test_windows_file_url_from_upstream_provider_is_normalized(self) -> None:
+        malformed_url = (
+            "file://C%3A%5CUsers%5Cabbas%5CAppData%5CLocal%5CTemp"
+            "%5Creelproof-media-abc%5Cmusic%5Cstep-1.mp3"
+        )
+
+        normalized_url = _normalize_generated_file_url(malformed_url)
+
+        self.assertEqual(
+            normalized_url,
+            "file:///C:/Users/abbas/AppData/Local/Temp/reelproof-media-abc/music/step-1.mp3",
+        )
 
     def test_text_to_audio_request_uses_multipart_form_data(self) -> None:
         captured: dict[str, bytes | str] = {}
