@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import tempfile
 import unittest
 from io import BytesIO
@@ -63,6 +64,107 @@ class Phase3ApiTests(unittest.TestCase):
         campaign = self.client.get(f"/campaigns/{job_id}")
         self.assertEqual(campaign.status_code, 200)
         self.assertFalse(campaign.json()["generate_music"])
+
+    def test_completed_campaign_returns_browser_readable_asset_urls(self) -> None:
+        store.create_job("job-complete", "A quiet coffee ritual", "slideshow", 3)
+        durable_urls = {
+            "image": "https://cdn.example.test/reelproof/frame.png",
+            "captioned": "https://cdn.example.test/reelproof/captioned.png",
+            "reel": "https://cdn.example.test/reelproof/final.mp4",
+            "music": "https://cdn.example.test/reelproof/music.mp3",
+            "manifest": "https://cdn.example.test/reelproof/manifest.json",
+        }
+        result = {
+            "job_id": "job-complete",
+            "topic": "A quiet coffee ritual",
+            "mode": "slideshow",
+            "status": "done",
+            "generate_music": True,
+            "beats": [
+                {
+                    "index": 0,
+                    "image_url": durable_urls["image"],
+                    "captioned_url": durable_urls["captioned"],
+                    "judge_iterations": 1,
+                    "passed": True,
+                }
+            ],
+            "reel_url": durable_urls["reel"],
+            "music_url": durable_urls["music"],
+            "manifest_uri": durable_urls["manifest"],
+            "hashtags": [],
+        }
+        store.set_result("job-complete", json.dumps(result))
+
+        def sign(url: str) -> str:
+            return f"{url}?signed=browser"
+
+        with patch("app.api.routes.browser_asset_url", side_effect=sign) as signer:
+            response = self.client.get("/campaigns/job-complete")
+
+        self.assertEqual(response.status_code, 200)
+        campaign = response.json()
+        self.assertEqual(campaign["beats"][0]["image_url"], f'{durable_urls["image"]}?signed=browser')
+        self.assertEqual(
+            campaign["beats"][0]["captioned_url"],
+            f'{durable_urls["captioned"]}?signed=browser',
+        )
+        self.assertEqual(campaign["reel_url"], f'{durable_urls["reel"]}?signed=browser')
+        self.assertEqual(campaign["music_url"], f'{durable_urls["music"]}?signed=browser')
+        self.assertEqual(
+            campaign["manifest_uri"], f'{durable_urls["manifest"]}?signed=browser'
+        )
+        self.assertEqual(signer.call_count, 5)
+
+        persisted = store.get_job("job-complete")["result"]
+        self.assertEqual(persisted["reel_url"], durable_urls["reel"])
+
+    def test_campaign_package_returns_readable_uploaded_assets_and_manifests(self) -> None:
+        store.create_job("job-package", "A quiet coffee ritual", "slideshow", 3)
+        store.record_product_asset(
+            asset_id="asset-1",
+            job_id="job-package",
+            filename="product.png",
+            media_type="image/png",
+            asset_url="https://cdn.example.test/reelproof/product.png",
+            sha256="a" * 64,
+            run_id="run-1",
+            manifest_hash="b" * 64,
+            manifest_uri="https://cdn.example.test/reelproof/product-manifest.json",
+        )
+        store.record_provenance(
+            run_id="run-1",
+            job_id="job-package",
+            manifest_json="{}",
+            manifest_hash="b" * 64,
+            manifest_uri="https://cdn.example.test/reelproof/product-manifest.json",
+            parent_run_id=None,
+        )
+
+        def sign(url: str) -> str:
+            return f"{url}?signed=browser"
+
+        with patch("app.api.routes.browser_asset_url", side_effect=sign):
+            response = self.client.get("/campaigns/job-package/package")
+
+        self.assertEqual(response.status_code, 200)
+        package = response.json()
+        self.assertEqual(
+            package["product_assets"][0]["asset_url"],
+            "https://cdn.example.test/reelproof/product.png?signed=browser",
+        )
+        self.assertEqual(
+            package["product_assets"][0]["manifest_uri"],
+            "https://cdn.example.test/reelproof/product-manifest.json?signed=browser",
+        )
+        self.assertEqual(
+            package["provenance"][0]["manifest_uri"],
+            "https://cdn.example.test/reelproof/product-manifest.json?signed=browser",
+        )
+        self.assertEqual(
+            store.list_product_assets("job-package")[0]["asset_url"],
+            "https://cdn.example.test/reelproof/product.png",
+        )
 
     def test_rejects_non_image_product_upload(self) -> None:
         job_id = self.create_draft()

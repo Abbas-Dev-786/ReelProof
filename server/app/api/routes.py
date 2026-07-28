@@ -40,7 +40,7 @@ from ..schemas import (
     RenderMode,
     VerifyResponse,
 )
-from ..storage import verify_manifest_json
+from ..storage import browser_asset_url, verify_manifest_json
 from ..workspace import media_workspace
 
 router = APIRouter()
@@ -51,6 +51,50 @@ _SUPPORTED_IMAGE_TYPES = {
     "PNG": ("image/png", ".png"),
     "WEBP": ("image/webp", ".webp"),
 }
+
+
+def _optional_browser_url(url: str | None) -> str | None:
+    return browser_asset_url(url) if url else None
+
+
+def _campaign_for_browser(campaign: CampaignResult) -> CampaignResult:
+    beats = [
+        beat.model_copy(
+            update={
+                "image_url": browser_asset_url(beat.image_url),
+                "video_url": _optional_browser_url(beat.video_url),
+                "captioned_url": _optional_browser_url(beat.captioned_url),
+            }
+        )
+        for beat in campaign.beats
+    ]
+    return campaign.model_copy(
+        update={
+            "beats": beats,
+            "reel_url": _optional_browser_url(campaign.reel_url),
+            "music_url": _optional_browser_url(campaign.music_url),
+            "manifest_uri": _optional_browser_url(campaign.manifest_uri),
+        }
+    )
+
+
+def _product_asset_for_browser(asset: ProductAssetResponse) -> ProductAssetResponse:
+    return asset.model_copy(
+        update={
+            "asset_url": browser_asset_url(asset.asset_url),
+            "manifest_uri": _optional_browser_url(asset.manifest_uri),
+        }
+    )
+
+
+def _lineage_for_browser(records: list[dict]) -> list[dict]:
+    return [
+        {
+            **record,
+            "manifest_uri": _optional_browser_url(record.get("manifest_uri")),
+        }
+        for record in records
+    ]
 
 
 async def _stage_and_ingest_product_upload(
@@ -136,15 +180,17 @@ async def _stage_and_ingest_product_upload(
             manifest_hash=str(ingested["manifest_hash"]),
             manifest_uri=ingested["manifest_uri"],
         )
-        return ProductAssetResponse(
-            asset_id=str(ingested["asset_id"]),
-            filename=normalized_filename,
-            media_type=media_type,
-            asset_url=str(ingested["asset_url"]),
-            sha256=ingested["sha256"],
-            run_id=str(ingested["run_id"]),
-            manifest_hash=str(ingested["manifest_hash"]),
-            manifest_uri=ingested["manifest_uri"],
+        return _product_asset_for_browser(
+            ProductAssetResponse(
+                asset_id=str(ingested["asset_id"]),
+                filename=normalized_filename,
+                media_type=media_type,
+                asset_url=str(ingested["asset_url"]),
+                sha256=ingested["sha256"],
+                run_id=str(ingested["run_id"]),
+                manifest_hash=str(ingested["manifest_hash"]),
+                manifest_uri=ingested["manifest_uri"],
+            )
         )
 
 
@@ -271,7 +317,7 @@ async def get_campaign(job_id: str) -> CampaignResult:
         raise HTTPException(status_code=404, detail="Job not found")
 
     if job["status"] == "done" and job.get("result"):
-        return CampaignResult(**job["result"])
+        return _campaign_for_browser(CampaignResult(**job["result"]))
 
     return CampaignResult(
         job_id=job_id,
@@ -291,15 +337,17 @@ async def campaign_package(job_id: str) -> CampaignPackageResponse:
 
     campaign = await get_campaign(job_id)
     product_assets = [
-        ProductAssetResponse(
-            asset_id=asset["asset_id"],
-            filename=asset["filename"],
-            media_type=asset["media_type"],
-            asset_url=asset["asset_url"],
-            sha256=asset["sha256"],
-            run_id=asset["run_id"],
-            manifest_hash=asset["manifest_hash"],
-            manifest_uri=asset["manifest_uri"],
+        _product_asset_for_browser(
+            ProductAssetResponse(
+                asset_id=asset["asset_id"],
+                filename=asset["filename"],
+                media_type=asset["media_type"],
+                asset_url=asset["asset_url"],
+                sha256=asset["sha256"],
+                run_id=asset["run_id"],
+                manifest_hash=asset["manifest_hash"],
+                manifest_uri=asset["manifest_uri"],
+            )
         )
         for asset in list_product_assets(job_id)
     ]
@@ -307,7 +355,7 @@ async def campaign_package(job_id: str) -> CampaignPackageResponse:
         job_id=job_id,
         campaign=campaign,
         product_assets=product_assets,
-        provenance=lineage_for_job(job_id),
+        provenance=_lineage_for_browser(lineage_for_job(job_id)),
     )
 
 
@@ -322,11 +370,11 @@ async def verify(run_id: str) -> VerifyResponse:
         run_id=run_id,
         verified=info.get("verified", False),
         manifest_hash=info.get("manifest_hash"),
-        manifest_uri=info.get("manifest_uri"),
+        manifest_uri=_optional_browser_url(info.get("manifest_uri")),
         provider=info.get("provider"),
         model=info.get("model"),
         created_at=info.get("created_at"),
-        lineage=lineage_for_run(run_id),
+        lineage=_lineage_for_browser(lineage_for_run(run_id)),
         error=info.get("error"),
     )
 
@@ -335,4 +383,4 @@ async def verify(run_id: str) -> VerifyResponse:
 async def campaign_lineage(job_id: str) -> LineageResponse:
     if get_job(job_id) is None:
         raise HTTPException(status_code=404, detail="Job not found")
-    return LineageResponse(job_id=job_id, runs=lineage_for_job(job_id))
+    return LineageResponse(job_id=job_id, runs=_lineage_for_browser(lineage_for_job(job_id)))

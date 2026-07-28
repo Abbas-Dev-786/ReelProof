@@ -88,6 +88,17 @@ class ReliabilityAndSafetyTests(unittest.TestCase):
             for key, value in prior.items():
                 setattr(settings, key, value)
 
+    def test_private_b2_bucket_does_not_require_a_public_url_base(self) -> None:
+        prior = settings.b2_public_url_base
+        try:
+            settings.b2_public_url_base = ""
+            missing = settings.missing_campaign_settings(
+                RenderMode.slideshow, generate_music=False
+            )
+            self.assertNotIn("B2_PUBLIC_URL_BASE", missing)
+        finally:
+            settings.b2_public_url_base = prior
+
     def test_pov_requires_elevenlabs_key_even_when_background_music_is_disabled(self) -> None:
         fields = ("stability_api_key", "elevenlabs_api_key", "gmi_api_key")
         prior = {field: getattr(settings, field) for field in fields}

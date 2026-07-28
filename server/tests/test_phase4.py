@@ -10,7 +10,7 @@ from app.config import settings
 from app.engine.judge import JudgeScoresResponse, VisionJudge, parse_judge_scores
 from app.engine.loop import refine_prompt, run_beat_loop
 from app.schemas import Beat
-from app.storage import readable_asset_url
+from app.storage import browser_asset_url, readable_asset_url
 
 
 class JudgeResponseTests(unittest.TestCase):
@@ -104,6 +104,35 @@ class VisionAssetUrlTests(unittest.TestCase):
 
         self.assertEqual(url, "https://provider.example.test/frame.png")
         backend.presigned_get_url.assert_not_called()
+
+    def test_signs_b2_asset_urls_for_browser_playback(self) -> None:
+        backend = MagicMock()
+        backend.key_from_url.return_value = "reelproof/run/final.mp4"
+        backend.presigned_get_url.return_value = (
+            "https://s3.example.test/final.mp4?signature=browser-secret"
+        )
+
+        with (
+            patch.object(
+                settings, "b2_public_url_base", "https://cdn.example.test/reelproof"
+            ),
+            patch("app.storage.get_backend", return_value=backend),
+        ):
+            url = browser_asset_url("https://cdn.example.test/reelproof/run/final.mp4")
+
+        self.assertEqual(
+            url, "https://s3.example.test/final.mp4?signature=browser-secret"
+        )
+        backend.presigned_get_url.assert_called_once_with(
+            "reelproof/run/final.mp4", expires_in=21_600
+        )
+
+    def test_browser_keeps_foreign_asset_urls_without_opening_b2(self) -> None:
+        with patch("app.storage.get_backend") as get_backend:
+            url = browser_asset_url("https://provider.example.test/frame.png")
+
+        self.assertEqual(url, "https://provider.example.test/frame.png")
+        get_backend.assert_not_called()
 
 
 class SelfHealingLoopTests(unittest.TestCase):

@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 from functools import lru_cache
 from typing import Any
+from urllib.parse import urlparse
 
 from genblaze_core import KeyStrategy, Manifest, ObjectLockConfig, ObjectStorageSink
 from genblaze_s3 import S3StorageBackend
@@ -10,6 +11,7 @@ from genblaze_s3 import S3StorageBackend
 from .config import settings
 
 _VISION_URL_TTL_SEC = 900
+_BROWSER_URL_TTL_SEC = 6 * 60 * 60
 
 
 @lru_cache(maxsize=1)
@@ -76,6 +78,34 @@ def readable_asset_url(asset_url: str) -> str:
     if key is None:
         return asset_url
     return backend.presigned_get_url(key, expires_in=_VISION_URL_TTL_SEC)
+
+
+def _belongs_to_configured_b2(asset_url: str) -> bool:
+    public_base = settings.b2_public_url_base.rstrip("/")
+    if public_base and asset_url.startswith(f"{public_base}/"):
+        return True
+
+    parsed = urlparse(asset_url)
+    raw_endpoint_host = f"s3.{settings.b2_region}.backblazeb2.com"
+    bucket_prefix = f"/{settings.b2_bucket}/"
+    return parsed.hostname == raw_endpoint_host and parsed.path.startswith(bucket_prefix)
+
+
+def browser_asset_url(asset_url: str) -> str:
+    """Return a browser-readable URL without changing the durable stored URL.
+
+    Campaign assets can live in a private B2 bucket. API responses receive a
+    six-hour signed URL so images and short videos remain playable throughout
+    an editing session, while SQLite and manifests retain stable unsigned URLs.
+    """
+    if not _belongs_to_configured_b2(asset_url):
+        return asset_url
+
+    backend = get_backend()
+    key = backend.key_from_url(asset_url)
+    if key is None:
+        return asset_url
+    return backend.presigned_get_url(key, expires_in=_BROWSER_URL_TTL_SEC)
 
 
 def verify_manifest_json(manifest_json: str) -> dict[str, Any]:

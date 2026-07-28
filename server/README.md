@@ -41,9 +41,9 @@ executables without making paid provider calls:
 ```
 
 `smoke_test.py --live` makes image and music provider requests and should only
-be run with an approved test account and B2 bucket. Full campaign creation also
-requires a browser-reachable `B2_PUBLIC_URL_BASE` until presigned asset URLs
-are implemented.
+be run with an approved test account and B2 bucket. Private buckets are
+supported: the API returns temporary signed URLs for browser playback while
+keeping durable unsigned URLs in SQLite and provenance manifests.
 
 ## LangSmith observability
 

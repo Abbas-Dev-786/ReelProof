@@ -238,9 +238,6 @@ class Settings(BaseSettings):
             self.active_llm_key_env_name: self.active_llm_api_key,
             "B2_KEY_ID": self.b2_key_id,
             "B2_APP_KEY": self.b2_app_key,
-            # The API returns stored asset URLs to the browser. Without a public
-            # base (or a future presigning implementation), private B2 URLs 403.
-            "B2_PUBLIC_URL_BASE": self.b2_public_url_base,
         }
         mode_value = getattr(mode, "value", mode)
         if generate_music:
