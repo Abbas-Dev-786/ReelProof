@@ -10,11 +10,22 @@ from .captions import caption_drawtext_filter
 
 
 def _build_video_filter(
-    n: int, beat_duration: float, transition_duration: float
+    n: int,
+    beat_duration: float,
+    transition_duration: float,
+    title_duration: float | None = None,
 ) -> tuple[str, float]:
     """Build the still-to-video filter graph and return its final duration."""
     if n < 1:
         raise ValueError("A slideshow needs at least one frame")
+    if beat_duration <= 0:
+        raise ValueError("beat_duration must be greater than zero")
+    if title_duration is not None and title_duration <= 0:
+        raise ValueError("title_duration must be greater than zero")
+
+    frame_durations = [beat_duration] * n
+    if title_duration is not None:
+        frame_durations[0] = title_duration
 
     fps = settings.slideshow_fps
     segments = [
@@ -28,11 +39,11 @@ def _build_video_filter(
     ]
 
     if n == 1:
-        return ";".join(segments) + ";[v0]null[vout]", beat_duration
+        return ";".join(segments) + ";[v0]null[vout]", frame_durations[0]
 
     filters = segments[:]
     previous = "v0"
-    current_duration = beat_duration
+    current_duration = frame_durations[0]
     for index in range(1, n):
         output = f"xf{index}"
         offset = current_duration - transition_duration
@@ -40,7 +51,7 @@ def _build_video_filter(
             f"[{previous}][v{index}]xfade=transition=fade:duration={transition_duration}:offset={offset}[{output}]"
         )
         previous = output
-        current_duration += beat_duration - transition_duration
+        current_duration += frame_durations[index] - transition_duration
 
     filters.append(f"[{previous}]null[vout]")
     return ";".join(filters), current_duration
@@ -52,11 +63,13 @@ def assemble_slideshow(
     beat_duration: float,
     output_dir: str | Path | None = None,
     voiceover_url: str | None = None,
+    title_duration: float | None = None,
 ) -> str:
     """
     Concat N captioned stills into a timed 9:16 MP4 with background music.
 
     Each still is held for beat_duration seconds with a subtle zoom (ken-burns).
+    When title_duration is provided, it applies to the first image only.
     Audio is trimmed/looped to match total duration and mixed in.
 
     Returns the local path of the final MP4.
@@ -75,7 +88,9 @@ def assemble_slideshow(
 
     n = len(image_paths)
     transition_duration = min(settings.slideshow_transition_sec, beat_duration / 3)
-    video_filter, total_duration = _build_video_filter(n, beat_duration, transition_duration)
+    video_filter, total_duration = _build_video_filter(
+        n, beat_duration, transition_duration, title_duration
+    )
     out_path = target_dir / "reel_slideshow.mp4"
 
     # --- Download audio sources ---
@@ -94,14 +109,15 @@ def assemble_slideshow(
     # Each image as a looped video source for beat_duration seconds
     input_args: list[str] = []
     fps = settings.slideshow_fps
-    for img_path in image_paths:
+    for index, img_path in enumerate(image_paths):
+        frame_duration = title_duration if index == 0 and title_duration is not None else beat_duration
         input_args += [
             "-loop",
             "1",
             "-framerate",
             str(fps),
             "-t",
-            str(beat_duration),
+            str(frame_duration),
             "-i",
             str(img_path),
         ]

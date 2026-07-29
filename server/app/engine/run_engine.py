@@ -16,7 +16,7 @@ from ..workspace import media_workspace, require_media_workspace
 from .assemble import assemble_pov_montage, assemble_slideshow
 from .audio import GeneratedAudio, generate_music_asset, generate_voiceover_asset
 from .beat_render import POVBeatRender, resume_pov_video, run_pov_beat_loop
-from .captions import burn_caption, caption_renderer_error
+from .captions import burn_caption, caption_renderer_error, render_title_card
 from .loop import run_beat_loop
 from .planner import plan_beats
 from .safety import ensure_assets_allowed
@@ -426,7 +426,18 @@ def _run_campaign(
             )
 
         beat_results: list[BeatResult] = []
-        captioned_paths: list[str] = []
+        title = beat_plan.hook.strip() or topic
+        title_card_path = render_title_card(title, output_dir=work_dir)
+        _store_local_intermediate(
+            job_id=job_id,
+            topic=topic,
+            mode=mode,
+            path=title_card_path,
+            media_type="image/png",
+            asset_kind="slideshow-title-card",
+            record_provenance=record_provenance,
+        )
+        captioned_paths: list[str] = [title_card_path]
         total_agent_cost = 0.0
 
         # 2. Per-beat: generate -> vision judge -> refine (bounded) -> caption.
@@ -497,7 +508,10 @@ def _run_campaign(
         music: GeneratedAudio | None = None
         if generate_music:
             emit("step.started", {"step": "audio", "message": "Generating music..."})
-            total_dur = len(beat_plan.beats) * settings.slideshow_beat_duration_sec
+            total_dur = (
+                settings.slideshow_title_duration_sec
+                + len(beat_plan.beats) * settings.slideshow_beat_duration_sec
+            )
             music = generate_music_asset(
                 topic, duration_sec=total_dur, sink=build_sink(), job_id=job_id
             )
@@ -513,6 +527,7 @@ def _run_campaign(
             readable_asset_url(music.url) if music else None,
             settings.slideshow_beat_duration_sec,
             output_dir=work_dir,
+            title_duration=settings.slideshow_title_duration_sec,
         )
         emit("step.completed", {"step": "assemble", "path": reel_path})
 

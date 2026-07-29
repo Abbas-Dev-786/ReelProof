@@ -100,6 +100,7 @@ class Settings(BaseSettings):
     max_agent_iterations: int = 2
     judge_pass_threshold: float = 0.7
     slideshow_beat_duration_sec: float = 3.5  # seconds per still in the final MP4
+    slideshow_title_duration_sec: float = 2.5
     slideshow_width: int = 1080
     slideshow_height: int = 1920
     slideshow_fps: int = 25

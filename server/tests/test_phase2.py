@@ -12,7 +12,12 @@ from genblaze_core.models.enums import ProviderErrorCode
 from app.config import settings
 from app.engine.assemble import _build_video_filter, assemble_pov_montage, assemble_slideshow
 from app.engine.beat_render import POVBeatRender
-from app.engine.captions import _ffmpeg_escape, _wrap, caption_drawtext_filter
+from app.engine.captions import (
+    _ffmpeg_escape,
+    _wrap,
+    caption_drawtext_filter,
+    title_drawtext_filter,
+)
 from app.engine.planner import parse_beat_plan, plan_beats
 from app.engine.run_engine import _run_pov_campaign, run_campaign
 from app.schemas import BeatPlan, JobStatus, RenderMode
@@ -177,6 +182,12 @@ class LocalRenderGuardTests(unittest.TestCase):
         self.assertIn(":y=(h-text_h)*0.82", drawtext)
         self.assertIn(":fix_bounds=1", drawtext)
 
+    def test_title_text_is_centered_without_a_content_caption_box(self) -> None:
+        drawtext = title_drawtext_filter("A Quiet Coffee Ritual")
+        self.assertIn(":x=(w-text_w)/2", drawtext)
+        self.assertIn(":y=(h-text_h)/2", drawtext)
+        self.assertNotIn(":box=1", drawtext)
+
     def test_assemble_requires_at_least_one_image(self) -> None:
         with self.assertRaisesRegex(ValueError, "without captioned images"):
             assemble_slideshow([], "file:///missing.mp3", 3.5)
@@ -202,6 +213,16 @@ class LocalRenderGuardTests(unittest.TestCase):
         graph, duration = _build_video_filter(n=3, beat_duration=3.5, transition_duration=0.35)
         self.assertIn("xfade=transition=fade", graph)
         self.assertAlmostEqual(duration, 9.8)
+
+    def test_title_card_can_have_a_shorter_duration(self) -> None:
+        graph, duration = _build_video_filter(
+            n=4,
+            beat_duration=3.5,
+            transition_duration=0.35,
+            title_duration=2.5,
+        )
+        self.assertIn("xfade=transition=fade", graph)
+        self.assertAlmostEqual(duration, 11.95)
 
     def test_pov_requests_dispatch_to_the_phase_six_engine(self) -> None:
         plan = BeatPlan(
@@ -301,6 +322,10 @@ class LocalRenderGuardTests(unittest.TestCase):
                 patch("app.engine.run_engine.plan_beats", return_value=plan),
                 patch("app.engine.run_engine.caption_renderer_error", return_value=None),
                 patch("app.engine.run_engine.run_beat_loop", return_value=loop_result),
+                patch(
+                    "app.engine.run_engine.render_title_card",
+                    return_value="/tmp/title.png",
+                ),
                 patch("app.engine.run_engine.burn_caption", return_value="/tmp/captioned.png"),
                 patch(
                     "app.engine.run_engine._store_local_intermediate",
@@ -344,6 +369,14 @@ class LocalRenderGuardTests(unittest.TestCase):
         generate_music.assert_not_called()
         generate_voiceover.assert_not_called()
         self.assertIsNone(assemble.call_args.args[1])
+        self.assertEqual(
+            assemble.call_args.args[0],
+            ["/tmp/title.png", "/tmp/captioned.png", "/tmp/captioned.png", "/tmp/captioned.png"],
+        )
+        self.assertEqual(
+            assemble.call_args.kwargs["title_duration"],
+            settings.slideshow_title_duration_sec,
+        )
         self.assertIn(
             ("step.completed", {"step": "audio", "enabled": False, "skipped": True}), events
         )

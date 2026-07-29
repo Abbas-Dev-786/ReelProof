@@ -46,6 +46,49 @@ def caption_drawtext_filter(caption: str) -> str:
     )
 
 
+def title_drawtext_filter(title: str) -> str:
+    """Return a centered drawtext filter for the opening title card."""
+    wrapped = _wrap(title, width=18)
+    escaped = _ffmpeg_escape(wrapped)
+    return (
+        f"drawtext=text='{escaped}'"
+        ":fontcolor=white"
+        ":fontsize=h*0.065"
+        ":x=(w-text_w)/2"
+        ":y=(h-text_h)/2"
+        ":line_spacing=10"
+        ":fix_bounds=1"
+    )
+
+
+def render_title_card(title: str, output_dir: str | Path | None = None) -> str:
+    """Render a text-only 9:16 opening card. Returns its local file path."""
+    target_dir = Path(output_dir or settings.output_path)
+    target_dir.mkdir(parents=True, exist_ok=True)
+    out_path = target_dir / "slideshow_title_card.png"
+
+    cmd = [
+        "ffmpeg",
+        "-y",
+        "-f",
+        "lavfi",
+        "-i",
+        (
+            f"color=c=0x15131f:s={settings.slideshow_width}x"
+            f"{settings.slideshow_height}"
+        ),
+        "-vf",
+        title_drawtext_filter(title),
+        "-frames:v",
+        "1",
+        str(out_path),
+    ]
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+    if result.returncode != 0:
+        raise RuntimeError(f"ffmpeg title-card render failed:\n{result.stderr}")
+    return str(out_path)
+
+
 def burn_caption(
     image_url: str, caption: str, beat_index: int, output_dir: str | Path | None = None
 ) -> str:
