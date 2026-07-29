@@ -23,7 +23,7 @@ export function CampaignPreview({ campaign }: CampaignPreviewProps) {
         <Badge className="w-fit bg-black/20 text-white hover:bg-black/20">Final reel</Badge>
         <div>
           <span className="mb-4 grid size-10 place-items-center rounded-xl bg-white/15"><Clapperboard className="size-5" /></span>
-          <p className="text-3xl font-semibold leading-[1.02] tracking-[-0.04em]">{campaign.beat_plan?.hook ?? "Your reel is ready"}</p>
+          <p className="max-w-full break-words text-2xl font-semibold leading-[1.08] sm:text-3xl [overflow-wrap:anywhere]">{campaign.beat_plan?.hook ?? "Your reel is ready"}</p>
           <div className="mt-4 flex items-center gap-2 text-sm text-white/80"><Play className="size-4 fill-current" /> 9:16 {campaign.mode === "pov" ? "POV montage" : "slideshow"}</div>
         </div>
       </div>

@@ -50,10 +50,21 @@ def title_drawtext_filter(title: str) -> str:
     """Return a centered drawtext filter for the opening title card."""
     wrapped = _wrap(title, width=18)
     escaped = _ffmpeg_escape(wrapped)
+    lines = wrapped.splitlines() or [""]
+    longest_line = max(len(line) for line in lines)
+    line_count = len(lines)
+
+    # Size against the rendered frame rather than assuming every title fits the
+    # default title size. The estimates leave room for wide glyphs and spacing.
+    safe_width = settings.slideshow_width * 0.8
+    safe_height = settings.slideshow_height * 0.55
+    width_size = safe_width / max(longest_line * 0.62, 1)
+    height_size = (safe_height - 10 * (line_count - 1)) / max(line_count * 1.2, 1)
+    font_size = max(12, min(settings.slideshow_height * 0.065, width_size, height_size))
     return (
         f"drawtext=text='{escaped}'"
         ":fontcolor=white"
-        ":fontsize=h*0.065"
+        f":fontsize={font_size:.2f}"
         ":x=(w-text_w)/2"
         ":y=(h-text_h)/2"
         ":line_spacing=10"

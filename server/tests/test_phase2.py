@@ -188,6 +188,12 @@ class LocalRenderGuardTests(unittest.TestCase):
         self.assertIn(":y=(h-text_h)/2", drawtext)
         self.assertNotIn(":box=1", drawtext)
 
+    def test_long_title_uses_a_smaller_bounded_font_size(self) -> None:
+        drawtext = title_drawtext_filter("W" * 45)
+        font_size = float(drawtext.split(":fontsize=", 1)[1].split(":", 1)[0])
+        self.assertLess(font_size, settings.slideshow_height * 0.065)
+        self.assertGreaterEqual(font_size, 12)
+
     def test_assemble_requires_at_least_one_image(self) -> None:
         with self.assertRaisesRegex(ValueError, "without captioned images"):
             assemble_slideshow([], "file:///missing.mp3", 3.5)
