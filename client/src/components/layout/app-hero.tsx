@@ -9,7 +9,7 @@ export function AppHero() {
           Turn an idea into a reel you can prove.
         </h1>
         <p className="mt-4 max-w-xl text-base leading-7 text-[#666473] sm:text-lg">
-          Build a vertical slideshow, review every beat as it self-corrects, then keep the full generation trail with the final export.
+          Build a vertical slideshow, review each slide as it self-corrects, then keep the full generation trail with the final export.
         </p>
       </div>
       <div className="hidden items-center gap-2 pb-1 text-sm text-[#6d6d7b] lg:flex">

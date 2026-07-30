@@ -3,7 +3,7 @@ import type { BeatProgress, GenerationStage } from "./types"
 export const createInitialBeats = (beatCount = 3): BeatProgress[] =>
   Array.from({ length: beatCount }, (_, index) => ({
     index,
-    label: index === 0 ? "Opening hook" : index === 1 ? "Core scene" : index === 2 ? "Payoff" : `Beat ${index + 1}`,
+    label: `Slide ${index + 1}`,
     state: "waiting",
   }))
 

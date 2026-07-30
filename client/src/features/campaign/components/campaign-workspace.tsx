@@ -37,7 +37,7 @@ export function CampaignWorkspace({ onOpenVerifier }: CampaignWorkspaceProps) {
       const existing = current.find((beat) => beat.index === index)
       const next: BeatProgress[] = existing
         ? current.map((beat) => beat.index === index ? { ...beat, ...update } : beat)
-        : [...current, { index, label: `Beat ${index + 1}`, state: "working" as const, ...update }]
+        : [...current, { index, label: `Slide ${index + 1}`, state: "working" as const, ...update }]
       return next.sort((a, b) => a.index - b.index)
     })
   }, [])
@@ -63,7 +63,7 @@ export function CampaignWorkspace({ onOpenVerifier }: CampaignWorkspaceProps) {
         const completedBeat = campaign.beats.find((item) => item.index === beat.index)
         return {
           index: beat.index,
-          label: beat.caption || `Beat ${index + 1}`,
+          label: `Slide ${index + 1}`,
           state: completedBeat?.passed ? "passed" : "working",
           score: completedBeat?.judge_score ?? undefined,
         }

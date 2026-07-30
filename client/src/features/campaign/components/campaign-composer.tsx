@@ -41,7 +41,7 @@ export function CampaignComposer({ topic, beatCount, mode, generateMusic, files,
         <p className="mb-4 text-xs font-semibold uppercase tracking-[0.12em] text-[#77737a]">Story settings</p>
         <div className="space-y-5">
           <div className="space-y-2">
-            <Label htmlFor="beat-count" className="text-sm font-medium text-[#393640]">Story beats</Label>
+            <Label htmlFor="beat-count" className="text-sm font-medium text-[#393640]">Number of slides</Label>
             <Input id="beat-count" type="number" min={3} max={8} value={beatCount} onChange={(event) => onBeatCountChange(Math.min(8, Math.max(3, Number(event.target.value) || 3)))} disabled={isWorking} className="h-11 border-[#d9d6cf] bg-white shadow-none" />
           </div>
           <RenderModeSelector value={mode} disabled={isWorking} onChange={onModeChange} />

@@ -25,7 +25,7 @@ export function GenerationTray({ stage, beats, mode }: GenerationTrayProps) {
           </div>
           <div className="min-w-0 flex-1">
             <p className="truncate text-sm font-medium">{beat.label}</p>
-            <p className="mt-0.5 text-xs text-[#86828c]">{beat.state === "passed" ? "Quality passed" : beat.state === "retrying" ? "Refining from feedback" : beat.state === "working" ? mode === "pov" ? "Rendering clip asynchronously" : "Generating and judging" : "Queued"}</p>
+            <p className="mt-0.5 text-xs text-[#86828c]">{beat.state === "passed" ? "Ready to use" : beat.state === "retrying" ? `Improving slide ${beat.index + 1}` : beat.state === "working" ? mode === "pov" ? `Generating video for slide ${beat.index + 1}` : `Generating slide ${beat.index + 1}` : "Queued"}</p>
           </div>
           {beat.score !== undefined && <span className="text-xs font-medium text-[#6d55cf]">{Math.round(beat.score * 100)}%</span>}
         </div>)}
