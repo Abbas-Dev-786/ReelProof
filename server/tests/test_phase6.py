@@ -9,7 +9,7 @@ from unittest.mock import patch
 
 from genblaze_core import Asset
 
-from app.engine.beat_render import resume_pov_video
+from app.engine.beat_render import _capture_pov_source_image, resume_pov_video
 from app.jobs import store
 
 
@@ -45,6 +45,23 @@ class POVCheckpointTests(unittest.TestCase):
 
         store.complete_checkpoint("job-1", "step-1")
         self.assertEqual(store.pending_checkpoints("job-1"), [])
+
+    def test_source_image_is_persisted_before_video_submission(self) -> None:
+        asset = Asset(url="file:///C:/Temp/reelproof-media/frame.png", media_type="image/png")
+        sink = SimpleNamespace()
+
+        def put_asset(source: Asset) -> Asset:
+            self.assertIs(source, asset)
+            source.url = "https://storage.example.test/reelproof/frame.png"
+            return source
+
+        sink.put_asset = put_asset
+        event = SimpleNamespace(step_index=0, step=SimpleNamespace(assets=[asset]))
+
+        persisted = _capture_pov_source_image(event, sink)
+
+        self.assertIs(persisted, asset)
+        self.assertEqual(asset.url, "https://storage.example.test/reelproof/frame.png")
 
     def test_resume_polls_existing_prediction_without_resubmitting(self) -> None:
         checkpoint = {

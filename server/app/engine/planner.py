@@ -41,6 +41,25 @@ _GROQ_PLANNER_RETRYABLE_ERRORS = frozenset(
         ProviderErrorCode.SERVER_ERROR,
     }
 )
+
+
+def _validate_pov_voiceovers(plan: BeatPlan) -> None:
+    """Ensure each narration line fits its fixed-length POV clip."""
+    max_words = settings.pov_voiceover_max_words_per_beat
+    if max_words < 1:
+        raise ValueError("POV voiceover word limit must be at least one")
+
+    for beat in plan.beats:
+        words = (beat.vo or "").split()
+        if not words:
+            raise ValueError("POV planner must return a non-empty vo line for every beat")
+        if len(words) > max_words:
+            raise ValueError(
+                f"POV voiceover for beat {beat.index} has {len(words)} words; "
+                f"maximum is {max_words}"
+            )
+
+
 _RETRYABLE_NVIDIA_ERRORS = frozenset(
     {
         ProviderErrorCode.TIMEOUT,
@@ -263,7 +282,8 @@ def plan_beats(
         user_msg += f"\nProduct context: {product_context}"
     if voiceover_required:
         user_msg += (
-            "\nVoiceover: every beat must include one concise spoken narration line in `vo`."
+            "\nVoiceover: every beat must include one concise spoken narration line in `vo`, "
+            f"with at most {settings.pov_voiceover_max_words_per_beat} words."
         )
 
     with trace_operation(
@@ -286,8 +306,8 @@ def plan_beats(
                     beat_count,
                     assign_indexes_locally=settings.llm_provider == "groq",
                 )
-                if voiceover_required and any(not (beat.vo or "").strip() for beat in plan.beats):
-                    raise ValueError("POV planner must return a non-empty vo line for every beat")
+                if voiceover_required:
+                    _validate_pov_voiceovers(plan)
             except (KeyError, TypeError, ValueError, ValidationError) as exc:
                 last_error = exc
                 if attempt == _GROQ_PLANNER_LOCAL_VALIDATION_ATTEMPTS:

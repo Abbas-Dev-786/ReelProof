@@ -109,6 +109,9 @@ class Settings(BaseSettings):
     pov_video_fallback_models: str = "seedance-1-0-pro-fast,wan2.6-i2v"
     pov_video_unit_cost_usd: float = 0.03
     pov_clip_duration_sec: int = 5
+    # At roughly 110 words per minute, this leaves a small pause inside each
+    # five-second POV clip instead of truncating the narration during muxing.
+    pov_voiceover_max_words_per_beat: int = 9
     pov_max_concurrency: int = 2
     pov_pipeline_timeout_sec: int = 900
     image_step_retries: int = 1

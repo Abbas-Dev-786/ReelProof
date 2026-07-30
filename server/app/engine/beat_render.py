@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import Any
+from urllib.parse import urlparse
 
 from genblaze_core import AgentContext, AgentLoop, Asset, Modality, Pipeline
 from genblaze_core.models.step import Step
@@ -53,6 +54,29 @@ class POVBeatRender:
     judge_score: float | None = None
     judge_iterations: int = 1
     passed: bool = True
+
+
+def _persist_pov_source_image(asset: Asset, sink: Any) -> Asset:
+    """Synchronously make an image-to-video source reachable by GMICloud.
+
+    A Cloudflare image is a local ``file://`` asset. Pipeline sinks normally
+    upload only after the full run finishes, which is too late for the next
+    chained provider step and for a resumable video checkpoint. Persist it
+    before submitting the remote video request.
+    """
+    if not hasattr(sink, "put_asset"):
+        raise TypeError("POV image persistence requires an ObjectStorageSink")
+    persisted = sink.put_asset(asset)
+    if urlparse(str(persisted.url)).scheme != "https":
+        raise RuntimeError("POV source image was not persisted to a durable HTTPS URL")
+    return persisted
+
+
+def _capture_pov_source_image(event: Any, sink: Any) -> Asset | None:
+    """Persist and return the first pipeline step's source image asset."""
+    if event.step_index != 0 or not event.step.assets:
+        return None
+    return _persist_pov_source_image(event.step.assets[0], sink)
 
 
 def render_beat_image(
@@ -147,8 +171,7 @@ async def render_pov_beat(
 
     def on_step_complete(event: Any) -> None:
         nonlocal image_asset
-        if event.step_index == 0 and event.step.assets:
-            image_asset = event.step.assets[0]
+        image_asset = _capture_pov_source_image(event, sink) or image_asset
 
     def on_submit(step_id: str, prediction_id: Any) -> None:
         nonlocal video_step_id
@@ -249,8 +272,7 @@ async def run_pov_beat_loop(
 
     def on_step_complete(event: Any) -> None:
         nonlocal latest_image_asset
-        if event.step_index == 0 and event.step.assets:
-            latest_image_asset = event.step.assets[0]
+        latest_image_asset = _capture_pov_source_image(event, sink) or latest_image_asset
 
     def build_pipeline(ctx: AgentContext) -> Pipeline:
         feedback = ctx.last_evaluation.feedback if ctx.last_evaluation else ""

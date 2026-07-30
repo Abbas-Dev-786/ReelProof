@@ -41,6 +41,7 @@ export type Campaign = {
     judge_iterations: number
     passed: boolean
   }>
+  title_image_url?: string | null
   reel_url?: string | null
   music_url?: string | null
   suggested_caption?: string | null

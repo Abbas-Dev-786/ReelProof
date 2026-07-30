@@ -72,32 +72,61 @@ def title_drawtext_filter(title: str) -> str:
     )
 
 
-def render_title_card(title: str, output_dir: str | Path | None = None) -> str:
-    """Render a text-only 9:16 opening card. Returns its local file path."""
+def render_title_card(
+    title: str,
+    output_dir: str | Path | None = None,
+    background_image_url: str | None = None,
+) -> str:
+    """Render a 9:16 opening card over an optional generated image."""
     target_dir = Path(output_dir or settings.output_path)
     target_dir.mkdir(parents=True, exist_ok=True)
     out_path = target_dir / "slideshow_title_card.png"
 
-    cmd = [
-        "ffmpeg",
-        "-y",
-        "-f",
-        "lavfi",
-        "-i",
-        (
-            f"color=c=0x15131f:s={settings.slideshow_width}x"
-            f"{settings.slideshow_height}"
-        ),
-        "-vf",
-        title_drawtext_filter(title),
-        "-frames:v",
-        "1",
-        str(out_path),
-    ]
-    result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
-    if result.returncode != 0:
-        raise RuntimeError(f"ffmpeg title-card render failed:\n{result.stderr}")
-    return str(out_path)
+    background_path: Path | None = None
+    try:
+        if background_image_url:
+            suffix = Path(background_image_url.split("?")[0]).suffix or ".png"
+            with tempfile.NamedTemporaryFile(delete=False, suffix=suffix, dir=target_dir) as tmp:
+                background_path = Path(tmp.name)
+                urllib.request.urlretrieve(background_image_url, tmp.name)
+
+        if background_path:
+            input_args = ["-i", str(background_path)]
+            video_filter = (
+                f"scale={settings.slideshow_width}:{settings.slideshow_height}:"
+                "force_original_aspect_ratio=increase,"
+                f"crop={settings.slideshow_width}:{settings.slideshow_height},"
+                f"{title_drawtext_filter(title)}"
+            )
+        else:
+            input_args = [
+                "-f",
+                "lavfi",
+                "-i",
+                (
+                    f"color=c=0x15131f:s={settings.slideshow_width}x"
+                    f"{settings.slideshow_height}"
+                ),
+            ]
+            video_filter = title_drawtext_filter(title)
+
+        cmd = [
+            "ffmpeg",
+            "-y",
+            *input_args,
+            "-vf",
+            video_filter,
+            "-frames:v",
+            "1",
+            str(out_path),
+        ]
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+        if result.returncode != 0:
+            raise RuntimeError(f"ffmpeg title-card render failed:\n{result.stderr}")
+        return str(out_path)
+    finally:
+        if background_path:
+            background_path.unlink(missing_ok=True)
 
 
 def burn_caption(

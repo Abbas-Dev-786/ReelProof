@@ -10,7 +10,7 @@ from genblaze_core import Asset
 from ..config import settings
 from ..jobs.store import complete_checkpoint, pending_checkpoints, save_checkpoint
 from ..observability import finish_trace, ingest_with_trace, trace_operation
-from ..schemas import BeatPlan, BeatResult, CampaignResult, JobStatus, RenderMode
+from ..schemas import Beat, BeatPlan, BeatResult, CampaignResult, JobStatus, RenderMode
 from ..storage import build_sink, readable_asset_url
 from ..workspace import media_workspace, require_media_workspace
 from .assemble import assemble_pov_montage, assemble_slideshow
@@ -278,6 +278,7 @@ def _run_pov_campaign(
         sink=build_sink(),
         job_id=job_id,
         output_dir=work_dir,
+        max_words=len(beat_plan.beats) * settings.pov_voiceover_max_words_per_beat,
         force=True,
     )
     _record_generated_audio(voiceover, record_provenance)
@@ -427,8 +428,34 @@ def _run_campaign(
 
         beat_results: list[BeatResult] = []
         title = beat_plan.hook.strip() or topic
-        title_card_path = render_title_card(title, output_dir=work_dir)
-        _store_local_intermediate(
+        emit("step.started", {"step": "title-image", "message": "Generating title image..."})
+
+        def record_title_iteration(record: dict[str, Any]) -> None:
+            if record_provenance:
+                record_provenance(record)
+
+        title_image = run_beat_loop(
+            Beat(
+                index=-1,
+                concept=(
+                    f"A striking editorial cover image for {topic}. "
+                    "Create a clean, photorealistic, faceless vertical scene with a strong focal subject, "
+                    "cinematic lighting, and no text, logos, borders, or watermarks."
+                ),
+                caption=title,
+            ),
+            sink=sink,
+            product_assets=product_assets,
+            on_iteration=record_title_iteration,
+        )
+        total_agent_cost = title_image.total_cost_usd
+        title_card_path = render_title_card(
+            title,
+            output_dir=work_dir,
+            background_image_url=readable_asset_url(title_image.asset_url),
+        )
+        emit("step.completed", {"step": "title-image", "enabled": True})
+        title_image_url = _store_local_intermediate(
             job_id=job_id,
             topic=topic,
             mode=mode,
@@ -438,7 +465,6 @@ def _run_campaign(
             record_provenance=record_provenance,
         )
         captioned_paths: list[str] = [title_card_path]
-        total_agent_cost = 0.0
 
         # 2. Per-beat: generate -> vision judge -> refine (bounded) -> caption.
         for beat in beat_plan.beats:
@@ -553,6 +579,7 @@ def _run_campaign(
             generate_music=generate_music,
             beat_plan=beat_plan,
             beats=beat_results,
+            title_image_url=title_image_url,
             reel_url=reel_b2_url,
             music_url=music.url if music else None,
             suggested_caption=beat_plan.suggested_caption,

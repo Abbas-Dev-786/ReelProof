@@ -158,6 +158,43 @@ class PlannerParsingTests(unittest.TestCase):
                 beat_count=2,
             )
 
+    def test_retries_pov_plan_when_voiceover_line_exceeds_clip_budget(self) -> None:
+        prior_key = settings.groq_api_key
+        prior_provider = settings.llm_provider
+        prior_limit = settings.pov_voiceover_max_words_per_beat
+        settings.groq_api_key = "test-groq-key"
+        settings.llm_provider = "groq"
+        settings.pov_voiceover_max_words_per_beat = 3
+        try:
+            with patch(
+                "app.engine.planner._planner_chat",
+                side_effect=[
+                    SimpleNamespace(
+                        text=(
+                            '{"hook":"h","beats":[{"concept":"c","caption":"x",'
+                            '"vo":"This narration has far too many words"}],'
+                            '"suggested_caption":"s","hashtags":[]}'
+                        ),
+                        raw={},
+                    ),
+                    SimpleNamespace(
+                        text=(
+                            '{"hook":"h","beats":[{"concept":"c","caption":"x",'
+                            '"vo":"Brew coffee slowly"}],"suggested_caption":"s","hashtags":[]}'
+                        ),
+                        raw={},
+                    ),
+                ],
+            ) as planner_chat:
+                plan = plan_beats("Coffee", beat_count=1, voiceover_required=True)
+        finally:
+            settings.groq_api_key = prior_key
+            settings.llm_provider = prior_provider
+            settings.pov_voiceover_max_words_per_beat = prior_limit
+
+        self.assertEqual(plan.beats[0].vo, "Brew coffee slowly")
+        self.assertEqual(planner_chat.call_count, 2)
+
     def test_rejects_non_sequential_indexes(self) -> None:
         with self.assertRaisesRegex(ValueError, "indexes"):
             parse_beat_plan(
@@ -331,7 +368,7 @@ class LocalRenderGuardTests(unittest.TestCase):
                 patch(
                     "app.engine.run_engine.render_title_card",
                     return_value="/tmp/title.png",
-                ),
+                ) as render_title,
                 patch("app.engine.run_engine.burn_caption", return_value="/tmp/captioned.png"),
                 patch(
                     "app.engine.run_engine._store_local_intermediate",
@@ -375,6 +412,11 @@ class LocalRenderGuardTests(unittest.TestCase):
         generate_music.assert_not_called()
         generate_voiceover.assert_not_called()
         self.assertIsNone(assemble.call_args.args[1])
+        title_call = render_title.call_args
+        self.assertEqual(title_call.args[0], "A quiet coffee ritual")
+        self.assertEqual(
+            title_call.kwargs["background_image_url"], "https://example.test/image.png"
+        )
         self.assertEqual(
             assemble.call_args.args[0],
             ["/tmp/title.png", "/tmp/captioned.png", "/tmp/captioned.png", "/tmp/captioned.png"],

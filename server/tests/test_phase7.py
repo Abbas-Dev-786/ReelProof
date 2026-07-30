@@ -3,6 +3,8 @@ from __future__ import annotations
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from urllib.parse import urlparse
+from urllib.request import url2pathname
 
 import httpx
 from genblaze_core import Asset, Modality
@@ -92,9 +94,7 @@ class ReliabilityAndSafetyTests(unittest.TestCase):
         prior = settings.b2_public_url_base
         try:
             settings.b2_public_url_base = ""
-            missing = settings.missing_campaign_settings(
-                RenderMode.slideshow, generate_music=False
-            )
+            missing = settings.missing_campaign_settings(RenderMode.slideshow, generate_music=False)
             self.assertNotIn("B2_PUBLIC_URL_BASE", missing)
         finally:
             settings.b2_public_url_base = prior
@@ -144,7 +144,8 @@ class ReliabilityAndSafetyTests(unittest.TestCase):
 
             self.assertEqual(len(result.assets), 1)
             self.assertEqual(result.assets[0].media_type, "image/png")
-            self.assertTrue(Path(str(result.assets[0].url).removeprefix("file://")).exists())
+            asset_path = Path(url2pathname(urlparse(str(result.assets[0].url)).path))
+            self.assertTrue(asset_path.exists())
 
     def test_prompt_moderation_blocks_unambiguous_high_risk_request(self) -> None:
         with self.assertRaises(ContentSafetyError):

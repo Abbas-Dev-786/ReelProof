@@ -71,6 +71,7 @@ def _campaign_for_browser(campaign: CampaignResult) -> CampaignResult:
     return campaign.model_copy(
         update={
             "beats": beats,
+            "title_image_url": _optional_browser_url(campaign.title_image_url),
             "reel_url": _optional_browser_url(campaign.reel_url),
             "music_url": _optional_browser_url(campaign.music_url),
             "manifest_uri": _optional_browser_url(campaign.manifest_uri),

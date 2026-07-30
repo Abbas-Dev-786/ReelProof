@@ -96,6 +96,7 @@ def generate_voiceover_asset(
     sink: ObjectStorageSink | None = None,
     job_id: str | None = None,
     output_dir: str | Path,
+    max_words: int | None = None,
     force: bool = False,
 ) -> GeneratedAudio | None:
     """Generate one campaign narration track when voiceover is enabled.
@@ -106,6 +107,12 @@ def generate_voiceover_asset(
     script = " ".join(line.strip() for line in lines if line and line.strip())
     if not script:
         return None
+    word_count = len(script.split())
+    if max_words is not None:
+        if max_words < 1:
+            raise ValueError("max_words must be at least one")
+        if word_count > max_words:
+            raise ValueError(f"Voiceover script has {word_count} words; maximum is {max_words}")
     if not force and not settings.voiceover_enabled:
         return None
     if not settings.elevenlabs_api_key:

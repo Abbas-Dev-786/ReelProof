@@ -18,6 +18,13 @@ type CampaignDeliverablesProps = {
 
 type DownloadState = "idle" | "images" | "video"
 
+type CarouselSlide = {
+  key: string
+  assetUrl: string
+  isTitle: boolean
+  beat?: Campaign["beats"][number]
+}
+
 function fileStem(value: string) {
   return value
     .trim()
@@ -62,6 +69,20 @@ export function CampaignDeliverables({ campaign }: CampaignDeliverablesProps) {
   const [downloadState, setDownloadState] = useState<DownloadState>("idle")
   const [downloadMessage, setDownloadMessage] = useState<string | null>(null)
   const campaignFileStem = useMemo(() => fileStem(campaign.topic), [campaign.topic])
+  const slides = useMemo<CarouselSlide[]>(
+    () => [
+      ...(campaign.title_image_url
+        ? [{ key: "title", assetUrl: campaign.title_image_url, isTitle: true }]
+        : []),
+      ...campaign.beats.map((beat) => ({
+        key: `scene-${beat.index}`,
+        assetUrl: beat.captioned_url ?? beat.image_url,
+        isTitle: false,
+        beat,
+      })),
+    ],
+    [campaign.beats, campaign.title_image_url],
+  )
 
   useEffect(() => {
     if (!api) return
@@ -82,6 +103,9 @@ export function CampaignDeliverables({ campaign }: CampaignDeliverablesProps) {
     setDownloadMessage(null)
 
     try {
+      if (campaign.title_image_url) {
+        await downloadAsset(campaign.title_image_url, `${campaignFileStem}-title`, "png")
+      }
       for (const beat of campaign.beats) {
         const assetUrl = beat.captioned_url ?? beat.image_url
         await downloadAsset(
@@ -90,13 +114,13 @@ export function CampaignDeliverables({ campaign }: CampaignDeliverablesProps) {
           "png",
         )
       }
-      setDownloadMessage(`${campaign.beats.length} carousel images downloaded.`)
+      setDownloadMessage(`${slides.length} carousel images downloaded.`)
     } catch {
       setDownloadMessage("The images could not be downloaded. Please try again.")
     } finally {
       setDownloadState("idle")
     }
-  }, [campaign.beats, campaignFileStem])
+  }, [campaign.beats, campaign.title_image_url, campaignFileStem, slides.length])
 
   const downloadVideo = useCallback(async () => {
     if (!campaign.reel_url) return
@@ -114,7 +138,7 @@ export function CampaignDeliverables({ campaign }: CampaignDeliverablesProps) {
     }
   }, [campaign.reel_url, campaignFileStem])
 
-  if (campaign.beats.length === 0) return null
+  if (slides.length === 0) return null
 
   return (
     <section className="border-t border-[#e9e5de] pt-4">
@@ -124,45 +148,44 @@ export function CampaignDeliverables({ campaign }: CampaignDeliverablesProps) {
             {campaign.mode === "pov" ? "POV clips" : "Image carousel"}
           </h3>
           <p className="mt-1 text-xs text-[#817c88]">
-            {activeSlide + 1} of {campaign.beats.length}
+            {activeSlide + 1} of {slides.length}
           </p>
         </div>
-        <span className="text-xs text-[#817c88]">{campaign.beats.length} scenes</span>
+        <span className="text-xs text-[#817c88]">{slides.length} slides</span>
       </div>
 
-      <Carousel className="mx-auto w-full max-w-[430px]" opts={{ loop: campaign.beats.length > 1 }} setApi={setApi}>
+      <Carousel className="mx-auto w-full max-w-[430px]" opts={{ loop: slides.length > 1 }} setApi={setApi}>
         <CarouselContent className="ms-0">
-          {campaign.beats.map((beat) => {
-            const assetUrl = beat.captioned_url ?? beat.image_url
-            const hasPovClip = campaign.mode === "pov" && Boolean(beat.video_url)
+          {slides.map((slide) => {
+            const hasPovClip = !slide.isTitle && campaign.mode === "pov" && Boolean(slide.beat?.video_url)
 
             return (
-              <CarouselItem className="ps-0" key={beat.index}>
+              <CarouselItem className="ps-0" key={slide.key}>
                 <div className="relative aspect-[9/16] overflow-hidden rounded-lg bg-[#17171f]">
                   {hasPovClip ? (
                     <video
-                      aria-label={`POV clip ${beat.index + 1}`}
+                      aria-label={`POV clip ${(slide.beat?.index ?? 0) + 1}`}
                       className="size-full object-contain"
                       controls
                       muted
                       playsInline
                       preload="metadata"
-                      src={beat.video_url ?? undefined}
+                      src={slide.beat?.video_url ?? undefined}
                     />
                   ) : (
                     <img
-                      alt={`Carousel scene ${beat.index + 1}`}
+                      alt={slide.isTitle ? "Title slide" : `Carousel scene ${(slide.beat?.index ?? 0) + 1}`}
                       className="size-full object-contain"
-                      src={assetUrl}
+                      src={slide.assetUrl}
                     />
                   )}
 
                   <div className="pointer-events-none absolute inset-x-0 top-0 flex items-center justify-between bg-gradient-to-b from-black/65 to-transparent px-3 pb-8 pt-3 text-white">
                     <span className="inline-flex items-center gap-1.5 text-xs font-medium">
                       {hasPovClip ? <Play className="size-3.5 fill-current" /> : <Images className="size-3.5" />}
-                      Scene {beat.index + 1}
+                      {slide.isTitle ? "Title" : `Scene ${(slide.beat?.index ?? 0) + 1}`}
                     </span>
-                    {beat.judge_score != null && <span className="text-[11px] text-white/80">Score {beat.judge_score}</span>}
+                    {slide.beat?.judge_score != null && <span className="text-[11px] text-white/80">Score {slide.beat.judge_score}</span>}
                   </div>
                 </div>
               </CarouselItem>
@@ -170,7 +193,7 @@ export function CampaignDeliverables({ campaign }: CampaignDeliverablesProps) {
           })}
         </CarouselContent>
 
-        {campaign.beats.length > 1 && (
+        {slides.length > 1 && (
           <>
             <CarouselPrevious className="start-3 z-10 border-white/25 bg-black/45 text-white shadow-sm hover:bg-black/65 hover:text-white" />
             <CarouselNext className="end-3 z-10 border-white/25 bg-black/45 text-white shadow-sm hover:bg-black/65 hover:text-white" />
@@ -178,17 +201,17 @@ export function CampaignDeliverables({ campaign }: CampaignDeliverablesProps) {
         )}
       </Carousel>
 
-      {campaign.beats.length > 1 && (
+      {slides.length > 1 && (
         <div aria-label="Choose carousel slide" className="mt-3 flex flex-wrap items-center justify-center gap-1.5">
-          {campaign.beats.map((beat, index) => (
+          {slides.map((slide, index) => (
             <button
-              aria-label={`Go to scene ${index + 1}`}
+              aria-label={slide.isTitle ? "Go to title slide" : `Go to scene ${index + 1}`}
               aria-current={index === activeSlide ? "true" : undefined}
               className={cn(
                 "h-1.5 rounded-full transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#6f5cc5] focus-visible:ring-offset-2",
                 index === activeSlide ? "w-6 bg-[#6856bf]" : "w-1.5 bg-[#cbc6d2] hover:bg-[#9d96aa]",
               )}
-              key={beat.index}
+              key={slide.key}
               onClick={() => api?.scrollTo(index)}
               type="button"
             />

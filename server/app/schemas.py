@@ -94,6 +94,7 @@ class CampaignResult(BaseModel):
     generate_music: bool = True
     beat_plan: BeatPlan | None = None
     beats: list[BeatResult] = Field(default_factory=list)
+    title_image_url: str | None = None
     reel_url: str | None = None  # final 9:16 MP4 in B2
     music_url: str | None = None
     suggested_caption: str | None = None
