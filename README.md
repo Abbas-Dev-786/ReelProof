@@ -2,7 +2,7 @@
 
 ### Generate a short-form video. Verify every frame behind it.
 
-**ReelProof** is a provenance-first AI studio for faceless short-form content. A creator enters a topic (and can upload a product image); ReelProof plans a story, generates vertical visuals, evaluates weak results with a separate vision model, retries with targeted feedback, adds captions and music, and delivers a ready-to-post reel. Every input, intermediate, and final asset is durably stored in **Backblaze B2** with a Genblaze provenance manifest and SHA-256 integrity record.
+**ReelProof** is a GenBlaze SDK-powered, provenance-first AI studio for faceless short-form content. A creator enters a topic (and can upload a product image); ReelProof plans a story, generates vertical visuals through interchangeable providers, evaluates weak results, retries with targeted feedback, adds captions and music, and delivers a ready-to-post reel. Every input, intermediate, and final asset is durably stored in **Backblaze B2** with a GenBlaze provenance manifest and SHA-256 integrity record.
 
 > Built for the **Backblaze B2 + Genblaze Generative AI Media Hackathon**.
 
@@ -63,11 +63,11 @@ flowchart TB
     W -->|REST: create, upload, start| A[FastAPI API]
     W <-->|SSE: durable progress| A
     A --> Q[Leased background campaign worker]
-    Q --> G[Genblaze pipelines]
-    G --> L[Groq planner + vision judge]
-    G --> I[Cloudflare Workers AI or GMICloud images]
+    Q --> G[GenBlaze SDK pipelines and AgentLoops]
+    G --> L[Groq or NVIDIA planner + vision judge]
+    G --> I[Custom Cloudflare provider or GMICloud images]
     G --> V[GMICloud image-to-video for POV]
-    G --> AU[Stability Audio + optional ElevenLabs TTS]
+    G --> AU[Custom Stability adapter + ElevenLabs TTS]
     Q --> F[ffmpeg captions, compositing, audio muxing]
     G --> B[(Backblaze B2)]
     F --> B
@@ -104,29 +104,51 @@ ReelProof uses B2 throughout the workflow, not merely as a final upload destinat
 - Optional B2 Object Lock applies **GOVERNANCE** retention (365 days by default) to manifests. It must be enabled on the B2 bucket before use.
 - Objects use Genblaze's hierarchical key strategy under the `reelproof` prefix.
 
-### Genblaze: orchestration, reliability, and provenance
+### GenBlaze: the application runtime
 
-- `Pipeline` orchestrates image, audio, text-to-speech, ingest, and chained image-to-video work.
-- `AgentLoop` implements the per-beat evaluator/retry loop and supplies linked run lineage.
-- `ObjectStorageSink` with `S3StorageBackend.for_backblaze(...)` writes assets and manifests directly to B2.
-- `Manifest.verify()` validates stored provenance before results are accepted.
-- `external_inputs` uses product images in B2 to condition visual generation.
-- `fallback_models` and bounded `RetryPolicy` settings recover from transient provider errors.
-- The POV pipeline checkpoints accepted video requests and can resume polling after an interrupted worker rather than submitting the same billed render again.
-- Optional `ParquetSink` supports lineage analytics; optional LangSmith tracing provides visibility without being a campaign dependency.
+GenBlaze is the workflow boundary between ReelProof and every generation vendor. The API and worker own campaign state; the SDK owns each media run, its provider execution, retry behavior, assets, and provenance record.
 
-## Providers and models
+- `Pipeline` runs still-image, music, narration, ingest, and chained image-to-video steps with a consistent `Step`/`Asset` contract.
+- `AgentLoop` builds a new image pipeline per beat attempt, sends its output to `VisionJudge`, and persists the reject -> refine -> pass sequence with `parent_run_id` lineage.
+- `ObjectStorageSink` plus `S3StorageBackend.for_backblaze(...)` uploads assets and canonical manifests to B2 as part of a run, using the SDK's hierarchical key strategy.
+- `external_inputs` supplies an uploaded, B2-backed product image to providers that accept image conditioning. For POV, the source image is persisted to B2 before the chained video provider is submitted.
+- Provider-specific `RetryPolicy`, `fallback_models`, timeouts, and billed-video checkpoints make recovery an explicit part of the run instead of ad-hoc application retries.
+- `Manifest.verify()` and `sink.read_manifest(..., verify=True)` power the verification endpoint; optional `ParquetSink` and LangSmith tracing add analytics and observability without becoming campaign dependencies.
 
-| Job                     | Default provider / model                                              | Configurable alternative or fallback                                                  |
-| ----------------------- | --------------------------------------------------------------------- | ------------------------------------------------------------------------------------- |
-| Beat planning           | Groq - `openai/gpt-oss-20b`                                           | Groq `openai/gpt-oss-120b` failover; NVIDIA NIM path                                  |
-| Visual quality judge    | Groq - `qwen/qwen3.6-27b`                                             | NVIDIA NIM vision path                                                                |
-| Still / product imagery | Cloudflare Workers AI - `@cf/bytedance/stable-diffusion-xl-lightning` | GMICloud `reve-create-20250915` / `reve-edit-fast-20251030` with configured fallbacks |
-| POV image-to-video      | GMICloud - `pixverse-v5.6-i2v`                                        | `seedance-1-0-pro-fast`, `wan2.6-i2v`                                                 |
-| Background music        | Stability Audio - `stable-audio-2.5`                                  | Can be disabled per campaign                                                          |
-| POV narration           | ElevenLabs - `eleven_v3`                                              | Optional; enable with `VOICEOVER_ENABLED=true`                                        |
-| Captions and assembly   | Local ffmpeg                                                          | Deterministic local process                                                           |
-| Storage / manifests     | Backblaze B2 via `genblaze-s3`                                        | Private-bucket signed reads supported                                                 |
+The implementation lives primarily in `server/app/engine/`: `loop.py` wires the `AgentLoop`, `beat_render.py` builds the chained POV pipeline, `audio.py` creates audio pipelines, and `storage.py` creates the B2 sink.
+
+## Provider implementations
+
+ReelProof deliberately uses GenBlaze's provider interface instead of hiding vendor calls inside the worker. This keeps the provider/model, parameters, output assets, retry state, and hashes in the same manifest regardless of who generated the media.
+
+### Project-owned GenBlaze extensions
+
+| Extension | SDK surface | Why it exists | What it handles |
+| --- | --- | --- | --- |
+| [`CloudflareImageProvider`](server/app/engine/cloudflare_image.py) | `SyncProvider` | Cloudflare Workers AI is the default low-cost still-image path, but is not an off-the-shelf provider in this app. | Registers a GenBlaze image-model catalog; validates supported parameters; supports text-to-image and image-conditioned requests; converts chain input into base64; maps Cloudflare HTTP failures to typed `ProviderError`s; and normalizes raw-image or JSON/base64 responses into `Asset`s. |
+| [`StabilityAudioProvider`](server/app/engine/stability_audio.py) | Subclass of `genblaze_stability_audio.StabilityAudioProvider` | Provides a narrow compatibility layer while retaining the upstream provider's generation and provenance behavior. | Sends Stable Audio's text-to-audio fields as required `multipart/form-data`, and fixes malformed Windows `file://` output URLs before later GenBlaze/B2 processing. |
+| [`groq.chat`](server/app/engine/groq.py) | GenBlaze-compatible chat adapter | Groq is OpenAI-compatible, but the app needs explicit request budgets and observable physical attempts for planner and judge calls. | Normalizes GenBlaze chat messages and response formats, applies Groq strict-schema rules, maps errors to `ProviderErrorCode`, honors retry-after signals, and paces per-model token use. |
+
+The first two are media providers used directly in `Pipeline.step(...)`. The Groq adapter is a companion integration for the planner and vision evaluator, which are deliberately outside a media pipeline but still return GenBlaze `ChatResponse` data and error semantics.
+
+### Provider and model matrix
+
+| Job | GenBlaze integration | Default model | Alternative / recovery path |
+| --- | --- | --- | --- |
+| Beat planning | Project Groq chat adapter | `openai/gpt-oss-20b` | `openai/gpt-oss-120b` on transient failure; NVIDIA NIM can be selected with `LLM_PROVIDER=nvidia`. |
+| Visual quality judge | Project Groq chat adapter + GenBlaze `Evaluator` | `qwen/qwen3.6-27b` | NVIDIA NIM vision model when selected. The judge result drives `AgentLoop`. |
+| Still / product imagery | Project `CloudflareImageProvider` | `@cf/bytedance/stable-diffusion-xl-lightning` | Set `IMAGE_PROVIDER=gmi` for GenBlaze GMICloud image models and their configured model fallbacks. |
+| POV image-to-video | `genblaze-gmicloud` `GMICloudVideoProvider` | `pixverse-v5.6-i2v` | `seedance-1-0-pro-fast`, then `wan2.6-i2v`; submission IDs are checkpointed for resume. |
+| Background music | Project `StabilityAudioProvider` | `stable-audio-2.5` | Optional per campaign; uses conservative SDK retry policy. |
+| POV narration | `genblaze-elevenlabs` `ElevenLabsTTSProvider` | `eleven_v3` | Optional; enable with `VOICEOVER_ENABLED=true`. |
+| Storage / manifests | `genblaze-s3` `S3StorageBackend` + `ObjectStorageSink` | Backblaze B2 | Private buckets use signed reads while durable manifest URLs remain stable. |
+| Captions / assembly | Local ffmpeg after GenBlaze runs | — | Deterministic local rendering; resulting media is persisted and recorded in B2. |
+
+### How provider selection works
+
+`server/app/engine/images.py` is the still-image factory. Its `image_provider()` returns the custom Cloudflare provider by default or the stock GMICloud provider when `IMAGE_PROVIDER=gmi`; the rest of the pipeline is unchanged. That is the practical value of the GenBlaze abstraction: provider choice does not alter the beat loop, manifest format, storage path, or verification API.
+
+For every media step, ReelProof passes the selected provider, model, modality, prompt, external inputs, fallback models, and a bounded retry policy to `Pipeline.step(...)`. The SDK records the resulting provider/model metadata alongside the output asset, and the sink persists the complete run to B2.
 
 ## Product workflow
 
@@ -165,6 +187,14 @@ GROQ_API_KEY=
 # Default still-image provider
 CLOUDFLARE_ACCOUNT_ID=
 CLOUDFLARE_API_TOKEN=
+# IMAGE_PROVIDER=cloudflare
+
+# Alternative still-image provider (set IMAGE_PROVIDER=gmi)
+# GMI_API_KEY=
+
+# Optional LLM path (Groq is the default)
+# LLM_PROVIDER=nvidia
+# NVIDIA_API_KEY=
 
 # Soundtrack
 STABILITY_API_KEY=
@@ -175,13 +205,12 @@ B2_APP_KEY=
 B2_BUCKET=reelproof-assets
 B2_REGION=us-west-004
 
-# Needed only for POV mode
-# GMI_API_KEY=
-
 # Optional POV narration
 # VOICEOVER_ENABLED=true
 # ELEVENLABS_API_KEY=
 ```
+
+The default configuration uses the project's `CloudflareImageProvider`. Set `IMAGE_PROVIDER=gmi` to switch the same GenBlaze image pipeline to `GMICloudImageProvider`; POV mode also requires `GMI_API_KEY` for its GMICloud video provider. Set `LLM_PROVIDER=nvidia` only when using the NVIDIA planner and vision-judge path; otherwise the project Groq adapter is used.
 
 ```powershell
 python -m venv .venv
